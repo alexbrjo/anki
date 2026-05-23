@@ -12,12 +12,26 @@ build:
     @just _install-migrate-helper
 
 # Copy the Doltlite migration helper next to librsbridge so the storage
-# layer can find it when launched via Python/aqt. (See locate_helper()
-# in rslib/src/storage/migrate_from_sqlite.rs.) Idempotent.
+# layer can find it when launched via Python/aqt. Matches the build
+# profile chosen by `RELEASE` (honoured by Anki's ninja build): unset →
+# debug, `RELEASE=1` → release, `RELEASE=2` → release-lto.
+#
+# The helper is only *invoked* when a legacy SQLite collection is
+# detected at open time (see locate_helper() and ensure_doltlite() in
+# rslib/src/storage/migrate_from_sqlite.rs), so this is the
+# "ship-by-default, run-on-demand" model.
 _install-migrate-helper:
-    cargo build -p anki-migrate-sqlite
-    mkdir -p out/rust/debug
-    cp target/debug/anki-migrate-sqlite out/rust/debug/anki-migrate-sqlite
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "${RELEASE:-}" in
+      1) profile=release; flag=--release ;;
+      2) profile=release-lto; flag="--profile release-lto" ;;
+      *) profile=debug; flag="" ;;
+    esac
+    cargo build $flag -p anki-migrate-sqlite
+    mkdir -p "out/rust/$profile"
+    cp "target/$profile/anki-migrate-sqlite" "out/rust/$profile/anki-migrate-sqlite"
+    echo "installed anki-migrate-sqlite ($profile) → out/rust/$profile/"
 
 # Build wheels (needed for some platforms)
 wheels:

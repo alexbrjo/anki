@@ -7,7 +7,18 @@
 
 //! Migration shim: legacy SQLite `.anki2` / `.mdb` → Doltlite-format file.
 //!
-//! Format detection follows SQLite's documented file header
+//! ## Lifecycle
+//!
+//! The `anki-migrate-sqlite` helper binary is *shipped by default* (it
+//! has to be — any user with an existing collection needs it once) but
+//! *invoked only on demand*: `ensure_doltlite()` short-circuits with a
+//! file-header check and never spawns the subprocess unless a legacy
+//! SQLite file is actually present. Fresh installs and
+//! already-migrated collections never touch it.
+//!
+//! ## Format detection
+//!
+//! Follows SQLite's documented file header
 //! (<https://www.sqlite.org/fileformat.html#the_database_header>):
 //!
 //!   * bytes  0..16  — magic `b"SQLite format 3\0"`
@@ -184,9 +195,16 @@ fn locate_helper() -> Option<PathBuf> {
         }
     }
 
-    // 5. Cargo target dirs from cwd.
+    // 5. Cargo / Anki-build output dirs from cwd. Profile-agnostic:
+    //    whichever build profile is active for this run, look there.
     if let Ok(cwd) = std::env::current_dir() {
-        for sub in ["target/debug", "target/release"] {
+        for sub in [
+            "out/rust/debug",
+            "out/rust/release",
+            "out/rust/release-lto",
+            "target/debug",
+            "target/release",
+        ] {
             let candidate = cwd.join(sub).join(exe_name);
             if candidate.exists() {
                 return Some(candidate);
