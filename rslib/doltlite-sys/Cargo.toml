@@ -1,0 +1,22 @@
+[package]
+name = "doltlite-sys"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+rust-version.workspace = true
+description = "FFI bindings to the Doltlite C library (SQLite fork with Prolly Tree storage)"
+build = "build.rs"
+links = "doltlite"
+
+[features]
+# TRACER STUB: until the Doltlite amalgamation is vendored under vendor/,
+# this crate is a no-op shell that doesn't link anything. Real wiring will
+# move behind a default feature once the amalgamation is in tree.
+default = []
+vendored = []
+
+[dependencies]
+
+[build-dependencies]

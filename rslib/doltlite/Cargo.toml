@@ -1,0 +1,23 @@
+[package]
+name = "doltlite"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+rust-version.workspace = true
+description = "Rusqlite-shaped Rust binding for Doltlite"
+
+[features]
+# TRACER STUB: while vendored Doltlite source is absent, we re-export the
+# upstream rusqlite types so call sites can migrate to `use doltlite::*`
+# today and pick up the real binding later with no further code changes.
+default = ["tracer-stub"]
+tracer-stub = ["rusqlite"]
+trace = ["rusqlite/trace"]
+functions = ["rusqlite/functions"]
+collation = ["rusqlite/collation"]
+
+[dependencies]
+doltlite-sys = { path = "../doltlite-sys" }
+rusqlite = { workspace = true, optional = true }

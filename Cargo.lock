@@ -165,6 +165,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "anki-migrate-sqlite"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "doltlite",
+ "rusqlite",
+]
+
+[[package]]
 name = "anki-sync-server"
 version = "0.0.0"
 dependencies = [
@@ -1932,6 +1941,18 @@ checksum = "95249b50c6c185bee49034bcb378a49dc2b5dff0be90ff6616d31d64febab05d"
 dependencies = [
  "litrs",
 ]
+
+[[package]]
+name = "doltlite"
+version = "0.0.0"
+dependencies = [
+ "doltlite-sys",
+ "rusqlite",
+]
+
+[[package]]
+name = "doltlite-sys"
+version = "0.0.0"
 
 [[package]]
 name = "dtoa"

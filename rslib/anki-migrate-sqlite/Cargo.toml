@@ -1,0 +1,26 @@
+[package]
+name = "anki-migrate-sqlite"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+rust-version.workspace = true
+description = "One-shot helper: dump a legacy SQLite Anki DB into a fresh Doltlite-format DB"
+
+[[bin]]
+name = "anki-migrate-sqlite"
+path = "src/main.rs"
+
+[dependencies]
+# Source side: stock rusqlite with bundled SQLite. This is exactly what
+# Anki uses today, so the open/read codepath is unchanged from the
+# pre-migration codebase.
+rusqlite = { workspace = true }
+
+# Destination side: the new Doltlite binding. Subprocess isolation is what
+# makes this safe — both libs export sqlite3_* symbols and can't coexist
+# in one process image, so this helper lives in its own binary.
+doltlite = { path = "../doltlite", default-features = false, features = ["tracer-stub"] }
+
+anyhow = { workspace = true }
