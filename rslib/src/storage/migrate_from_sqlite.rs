@@ -106,7 +106,11 @@ fn migrate_in_place(path: &Path) -> std::io::Result<()> {
     let helper = locate_helper().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,
-            "anki-migrate-sqlite helper binary not found next to anki or on PATH",
+            "anki-migrate-sqlite helper binary not found. Looked next to the \
+             current executable, next to the loaded librsbridge dylib, in \
+             ./target/{debug,release}/ from the current working directory, \
+             and on PATH. Set the environment variable \
+             ANKI_MIGRATE_SQLITE_BIN to an absolute path to override.",
         )
     })?;
 
@@ -123,9 +127,16 @@ fn migrate_in_place(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Locate the `anki-migrate-sqlite` binary, looking next to the current
-/// exe first, then in CARGO_BIN_EXE_* (set during `cargo test`), then on
-/// PATH.
+/// Locate the `anki-migrate-sqlite` binary. Search order:
+///   1. `ANKI_MIGRATE_SQLITE_BIN` env var (escape hatch)
+///   2. Next to `std::env::current_exe()` — works for direct `anki`
+///      binary invocation and `cargo test`
+///   3. One directory up (covers `cargo test`'s `target/debug/deps/`)
+///   4. Next to the loaded librsbridge dylib — works for launches via
+///      Python/aqt where `current_exe()` is the Python interpreter
+///   5. `./target/{debug,release}/` from the current working directory
+///      — covers `python -m aqt` from the project root in dev
+///   6. PATH lookup
 fn locate_helper() -> Option<PathBuf> {
     let exe_name = if cfg!(windows) {
         "anki-migrate-sqlite.exe"
@@ -133,13 +144,21 @@ fn locate_helper() -> Option<PathBuf> {
         "anki-migrate-sqlite"
     };
 
+    // 1. Explicit override.
+    if let Some(p) = std::env::var_os("ANKI_MIGRATE_SQLITE_BIN") {
+        let candidate = PathBuf::from(p);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+
+    // 2-3. Next to current_exe and one dir up.
     if let Ok(current) = std::env::current_exe() {
         if let Some(dir) = current.parent() {
             let candidate = dir.join(exe_name);
             if candidate.exists() {
                 return Some(candidate);
             }
-            // cargo puts test binaries in target/debug/deps; bins in target/debug
             if let Some(parent) = dir.parent() {
                 let candidate = parent.join(exe_name);
                 if candidate.exists() {
@@ -148,9 +167,72 @@ fn locate_helper() -> Option<PathBuf> {
             }
         }
     }
-    // CARGO_BIN_EXE_<name> is injected for integration tests of the same
-    // package; for cross-package use we fall back to PATH lookup.
+
+    // 4. Next to the loaded librsbridge dylib (Python-launched case).
+    if let Some(dylib_dir) = current_dylib_dir() {
+        let candidate = dylib_dir.join(exe_name);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+        // The dylib lives at out/rust/{debug,release}/librsbridge.dylib;
+        // bins land in target/{debug,release}/. Try both.
+        if let Some(parent) = dylib_dir.parent() {
+            let candidate = parent.join(exe_name);
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    // 5. Cargo target dirs from cwd.
+    if let Ok(cwd) = std::env::current_dir() {
+        for sub in ["target/debug", "target/release"] {
+            let candidate = cwd.join(sub).join(exe_name);
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    // 6. PATH.
     which_on_path(exe_name)
+}
+
+/// Find the directory containing the dynamic library that this code is
+/// linked into. Uses `dladdr` on a stable symbol from this module to
+/// resolve the dylib path at runtime. Returns None on Windows or if the
+/// lookup fails.
+#[cfg(unix)]
+fn current_dylib_dir() -> Option<PathBuf> {
+    use std::ffi::CStr;
+    use std::os::raw::{c_int, c_void};
+
+    #[repr(C)]
+    struct DlInfo {
+        dli_fname: *const std::os::raw::c_char,
+        dli_fbase: *mut c_void,
+        dli_sname: *const std::os::raw::c_char,
+        dli_saddr: *mut c_void,
+    }
+    unsafe extern "C" {
+        fn dladdr(addr: *const c_void, info: *mut DlInfo) -> c_int;
+    }
+
+    let mut info: DlInfo = unsafe { std::mem::zeroed() };
+    // Take the address of a function in this crate as the probe.
+    let probe = current_dylib_dir as *const c_void;
+    let ok = unsafe { dladdr(probe, &mut info) };
+    if ok == 0 || info.dli_fname.is_null() {
+        return None;
+    }
+    let cstr = unsafe { CStr::from_ptr(info.dli_fname) };
+    let path = PathBuf::from(cstr.to_str().ok()?);
+    path.parent().map(|p| p.to_path_buf())
+}
+
+#[cfg(not(unix))]
+fn current_dylib_dir() -> Option<PathBuf> {
+    None
 }
 
 fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
@@ -266,6 +348,23 @@ mod tests {
             source_id.contains("alt1"),
             "expected Doltlite marker 'alt1' in sourceid, got: {source_id}"
         );
+    }
+
+    #[test]
+    fn env_var_override_takes_priority() {
+        let f = tempfile::NamedTempFile::new().unwrap();
+        // Write some bytes so the path "exists" semantically.
+        std::fs::write(f.path(), b"ignored").unwrap();
+        let prev = std::env::var_os("ANKI_MIGRATE_SQLITE_BIN");
+        // SAFETY: tests in this crate are not run in parallel with code
+        // that consults this env var.
+        unsafe { std::env::set_var("ANKI_MIGRATE_SQLITE_BIN", f.path()) };
+        let located = locate_helper();
+        match prev {
+            Some(v) => unsafe { std::env::set_var("ANKI_MIGRATE_SQLITE_BIN", v) },
+            None => unsafe { std::env::remove_var("ANKI_MIGRATE_SQLITE_BIN") },
+        }
+        assert_eq!(located.as_deref(), Some(f.path()));
     }
 
     #[test]

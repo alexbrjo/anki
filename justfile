@@ -9,6 +9,15 @@ default:
 # Build the project
 build:
     {{ ninja }} pylib qt
+    @just _install-migrate-helper
+
+# Copy the Doltlite migration helper next to librsbridge so the storage
+# layer can find it when launched via Python/aqt. (See locate_helper()
+# in rslib/src/storage/migrate_from_sqlite.rs.) Idempotent.
+_install-migrate-helper:
+    cargo build -p anki-migrate-sqlite
+    mkdir -p out/rust/debug
+    cp target/debug/anki-migrate-sqlite out/rust/debug/anki-migrate-sqlite
 
 # Build wheels (needed for some platforms)
 wheels:
