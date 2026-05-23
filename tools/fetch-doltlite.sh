@@ -11,7 +11,9 @@
 set -euo pipefail
 
 DOLTLITE_REPO="${DOLTLITE_REPO:-https://github.com/dolthub/doltlite.git}"
-DOLTLITE_REV="${DOLTLITE_REV:-main}"   # TODO: pin to a known-good SHA
+# Pinned to v0.11.0-11-g04d01572eb (forked from SQLite 3.54.0).
+# Bump deliberately — Doltlite is pre-1.0 and the on-disk format may change.
+DOLTLITE_REV="${DOLTLITE_REV:-04d01572eb9dd07b9b9d3ec0d5d4951748808a3f}"
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VENDOR_DIR="$REPO_ROOT/rslib/doltlite-sys/vendor"
@@ -19,13 +21,10 @@ WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
 echo "Cloning $DOLTLITE_REPO @ $DOLTLITE_REV into $WORK_DIR..."
-git clone --depth 1 --branch "$DOLTLITE_REV" "$DOLTLITE_REPO" "$WORK_DIR/doltlite" \
-  || git clone "$DOLTLITE_REPO" "$WORK_DIR/doltlite"
+git clone "$DOLTLITE_REPO" "$WORK_DIR/doltlite"
 
 pushd "$WORK_DIR/doltlite" >/dev/null
-if [ "$DOLTLITE_REV" != "main" ]; then
-  git checkout "$DOLTLITE_REV"
-fi
+git checkout "$DOLTLITE_REV"
 
 echo "Building amalgamation..."
 ./configure

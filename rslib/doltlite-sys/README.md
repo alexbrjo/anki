@@ -4,18 +4,22 @@ Raw FFI bindings to [Doltlite](https://github.com/dolthub/doltlite), a fork
 of SQLite with a Dolt-style Prolly Tree storage backend. Doltlite preserves
 SQLite's C ABI; this crate is structured as a sibling of `libsqlite3-sys`.
 
-## Status: tracer-bullet stub
+## Status: tracer-bullet
 
-The C amalgamation is **not yet vendored**. The crate currently compiles to
-an empty Rust library so the workspace still builds. To complete the wiring:
+The 9 MB amalgamation is generated, not checked in. Run once after clone:
 
 ```sh
 tools/fetch-doltlite.sh
-cargo build -p doltlite-sys --features vendored
+cargo test -p doltlite-sys --features vendored
 ```
 
-`fetch-doltlite.sh` clones dolthub/doltlite, runs `./configure && make
-sqlite3.c sqlite3.h`, and copies the amalgamation to `vendor/`.
+The smoke test calls `sqlite3_libversion()` / `sqlite3_sourceid()` through
+the FFI to prove the vendored library is linkable. Expected: SQLite
+**3.54.0**, sourceid ending in `alt1` (Doltlite fork marker).
+
+The full bindgen-generated FFI surface is **not yet written** — see
+`rslib/doltlite` (the consumer-facing wrapper). For now the `-sys` crate
+declares only the version-introspection functions used by the smoke test.
 
 ## Why a separate -sys crate
 

@@ -20,3 +20,4 @@ vendored = []
 [dependencies]
 
 [build-dependencies]
+cc = "1.2"
