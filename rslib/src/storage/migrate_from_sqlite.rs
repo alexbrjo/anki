@@ -352,6 +352,13 @@ mod tests {
     /// Sanity check that the in-process SQL engine is actually Doltlite,
     /// not stock SQLite. Doltlite identifies itself via the `alt1`
     /// suffix on `sqlite_source_id()`.
+    ///
+    /// NOTE: we are currently linking Doltlite's stock-SQLite-compat
+    /// amalgamation, *not* the prolly tree engine — see
+    /// `rslib/doltlite-sys/PROLLY_BLOCKER.md`. So this only verifies
+    /// we're running Doltlite-the-binary, not Doltlite-the-prolly-tree.
+    /// On-disk format remains legacy SQLite until the upstream
+    /// collation restriction is lifted.
     #[test]
     fn runtime_is_doltlite() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
@@ -366,6 +373,22 @@ mod tests {
             source_id.contains("alt1"),
             "expected Doltlite marker 'alt1' in sourceid, got: {source_id}"
         );
+    }
+
+    /// Aspirational guard: when upstream lifts the collation
+    /// restriction in DOLTLITE_PROLLY mode and we switch
+    /// `libsqlite3-sys-doltlite/build.rs` to link `libdoltlite.a`,
+    /// this should start passing. Currently `#[ignore]`'d because the
+    /// amalgamation build doesn't even expose `doltlite_engine()`.
+    #[test]
+    #[ignore = "blocked on prolly collation support — see PROLLY_BLOCKER.md"]
+    fn fresh_dbs_use_prolly_engine() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let engine: String = conn
+            .query_row("SELECT doltlite_engine()", [], |r| r.get(0))
+            .expect("doltlite_engine() missing — linked against compat \
+                     amalgamation, not libdoltlite.a");
+        assert_eq!(engine, "prolly", "expected prolly engine, got {engine}");
     }
 
     #[test]

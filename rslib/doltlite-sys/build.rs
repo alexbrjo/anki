@@ -1,17 +1,14 @@
-// Build script for doltlite-sys.
-//
-// TRACER STATUS: This crate currently does NOT compile any C source. Once
-// `tools/fetch-doltlite.sh` has populated `vendor/{doltlite.c,sqlite3.h}`,
-// enable the `vendored` feature and uncomment the cc::Build block below.
-//
-// The amalgamation is generated from https://github.com/dolthub/doltlite via:
-//   ./configure && make sqlite3.c sqlite3.h
-// (see tools/fetch-doltlite.sh).
-//
-// Doltlite preserves SQLite's C ABI: the symbols are still `sqlite3_*`, so
-// this crate exports them under those names. That means it cannot coexist
-// in the same process image as a real SQLite linkage; the migration helper
-// at `rslib/anki-migrate-sqlite` lives in its own binary for that reason.
+//! Build script for doltlite-sys.
+//!
+//! ## Status: linking against Doltlite's SQLite-compat amalgamation, not prolly
+//!
+//! We currently compile the `make sqlite3.c` amalgamation (stock-SQLite
+//! shape, alt1 sourceid). This is **not** the prolly-tree engine — see
+//! `PROLLY_BLOCKER.md` for the upstream limitation that prevents us
+//! linking the real `libdoltlite.a`. When upstream lifts the
+//! collation-in-prolly restriction, swap the cc::Build block below
+//! for a `cargo:rustc-link-lib=static=doltlite` directive pointed at
+//! `vendor/libdoltlite.a` (kept in `vendor/` alongside).
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
@@ -19,7 +16,8 @@ fn main() {
 
     #[cfg(feature = "vendored")]
     {
-        let vendor = std::path::Path::new("vendor");
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let vendor = manifest_dir.join("vendor");
         let src = vendor.join("doltlite.c");
         assert!(
             src.exists(),
@@ -27,9 +25,8 @@ fn main() {
         );
         cc::Build::new()
             .file(&src)
-            .include(vendor)
+            .include(&vendor)
             .define("SQLITE_ENABLE_FTS5", None)
-            .define("SQLITE_DQS", Some("0"))
             .define("SQLITE_THREADSAFE", Some("1"))
             .compile("doltlite");
     }

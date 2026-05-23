@@ -26,18 +26,27 @@ git clone "$DOLTLITE_REPO" "$WORK_DIR/doltlite"
 pushd "$WORK_DIR/doltlite" >/dev/null
 git checkout "$DOLTLITE_REV"
 
-echo "Building amalgamation..."
+echo "Building Doltlite..."
 ./configure
-make sqlite3.c sqlite3.h sqlite3ext.h
+# We build BOTH artifacts:
+#   * `make sqlite3.c sqlite3.h sqlite3ext.h` → stock-SQLite-compat
+#     amalgamation. CURRENT default consumer. The prolly tree engine
+#     is excluded from this build (see PROLLY_BLOCKER.md).
+#   * `make doltlite-lib` → libdoltlite.a, the real prolly-tree
+#     engine. Vendored alongside for when upstream lifts the custom
+#     collation restriction in DOLTLITE_PROLLY mode.
+make sqlite3.c sqlite3.h sqlite3ext.h doltlite-lib
 
 mkdir -p "$VENDOR_DIR"
-cp sqlite3.c   "$VENDOR_DIR/doltlite.c"
-cp sqlite3.h   "$VENDOR_DIR/sqlite3.h"
-cp sqlite3ext.h "$VENDOR_DIR/sqlite3ext.h"
+cp sqlite3.c     "$VENDOR_DIR/doltlite.c"
+cp sqlite3.h     "$VENDOR_DIR/sqlite3.h"
+cp sqlite3ext.h  "$VENDOR_DIR/sqlite3ext.h"
+cp libdoltlite.a "$VENDOR_DIR/libdoltlite.a"
 popd >/dev/null
 
-echo "Doltlite amalgamation vendored to $VENDOR_DIR:"
+echo
+echo "Doltlite prolly-tree static lib vendored to $VENDOR_DIR:"
 ls -lh "$VENDOR_DIR"
 echo
-echo "Next:"
-echo "  cargo build -p doltlite-sys --features vendored"
+echo "Verify the engine after rebuild:"
+echo "  cargo test -p anki --lib storage::migrate_from_sqlite::tests::fresh_dbs_use_prolly_engine -- --nocapture"
