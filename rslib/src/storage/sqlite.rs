@@ -62,11 +62,14 @@ fn open_or_create_collection_db(path: &Path) -> Result<Connection> {
 
     db.busy_timeout(std::time::Duration::from_secs(0))?;
 
-    db.pragma_update(None, "locking_mode", "exclusive")?;
-    db.pragma_update(None, "page_size", 4096)?;
-    db.pragma_update(None, "cache_size", -40 * 1024)?;
-    db.pragma_update(None, "legacy_file_format", false)?;
-    db.pragma_update(None, "journal_mode", "wal")?;
+    let doltlite = is_doltlite_db(&db);
+    if !doltlite {
+        db.pragma_update(None, "locking_mode", "exclusive")?;
+        db.pragma_update(None, "page_size", 4096)?;
+        db.pragma_update(None, "cache_size", -40 * 1024)?;
+        db.pragma_update(None, "legacy_file_format", false)?;
+        db.pragma_update(None, "journal_mode", "wal")?;
+    }
     // Android has no /tmp folder, and fails in the default config.
     #[cfg(target_os = "android")]
     db.pragma_update(None, "temp_store", &"memory")?;
@@ -85,7 +88,9 @@ fn open_or_create_collection_db(path: &Path) -> Result<Connection> {
     add_extract_fsrs_retrievability(&db)?;
     add_extract_fsrs_relative_retrievability(&db)?;
 
-    db.create_collation("unicase", unicase_compare)?;
+    if !doltlite {
+        db.create_collation("unicase", unicase_compare)?;
+    }
 
     Ok(db)
 }
@@ -97,6 +102,40 @@ impl SqliteStorage {
     pub fn db(&self) -> &Connection {
         &self.db
     }
+
+    pub(crate) fn is_doltlite(&self) -> bool {
+        is_doltlite_db(&self.db)
+    }
+
+    pub(crate) fn execute_schema_sql(&self, sql: &str) -> rusqlite::Result<()> {
+        if self.is_doltlite() {
+            self.db.execute_batch(&doltlite_schema_sql(sql))
+        } else {
+            self.db.execute_batch(sql)
+        }
+    }
+}
+
+fn is_doltlite_db(db: &Connection) -> bool {
+    matches!(
+        db.query_row("select doltlite_engine()", [], |row| row.get::<_, String>(0)),
+        Ok(engine) if engine == "prolly"
+    )
+}
+
+fn doltlite_schema_sql(sql: &str) -> String {
+    strip_sql_line_comments(sql)
+        .replace("COLLATE unicase", "COLLATE NOCASE")
+        .replace("collate unicase", "collate nocase")
+        .replace(" without rowid", "")
+        .replace(" WITHOUT ROWID", "")
+}
+
+fn strip_sql_line_comments(sql: &str) -> String {
+    sql.lines()
+        .map(|line| line.split_once("--").map_or(line, |(sql, _comment)| sql))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 /// Adds sql function field_at_index(flds, index)
 /// to split provided fields and return field at zero-based index.
@@ -512,7 +551,11 @@ impl SqliteStorage {
         }
 
         if create {
-            db.execute_batch(include_str!("schema11.sql"))?;
+            if is_doltlite_db(&db) {
+                db.execute_batch(&doltlite_schema_sql(include_str!("schema11.sql")))?;
+            } else {
+                db.execute_batch(include_str!("schema11.sql"))?;
+            }
             // start at schema 11, then upgrade below
             let crt = TimestampSecs(v1_creation_date());
             let offset = if server {
@@ -553,7 +596,7 @@ impl SqliteStorage {
     pub(crate) fn close(self, desired_version: Option<SchemaVersion>) -> Result<()> {
         if let Some(version) = desired_version {
             self.downgrade_to(version)?;
-            if version.has_journal_mode_delete() {
+            if version.has_journal_mode_delete() && !self.is_doltlite() {
                 self.db.pragma_update(None, "journal_mode", "delete")?;
             }
         }
@@ -568,6 +611,9 @@ impl SqliteStorage {
                 "active transaction",
                 DbErrorKind::Other,
             ));
+        }
+        if self.is_doltlite() {
+            return Ok(());
         }
         self.db
             .query_row_and_then("pragma wal_checkpoint(truncate)", [], |row| {
@@ -675,9 +721,50 @@ impl Display for SqlSortOrder {
 
 #[cfg(test)]
 mod test {
+    use anki_io::new_tempfile;
+
     use super::*;
+    use crate::collection::CollectionBuilder;
     use crate::scheduler::answering::test::v3_test_collection;
     use crate::storage::card::ReviewOrderSubclause;
+
+    #[test]
+    fn links_to_doltlite_engine() -> Result<()> {
+        let db = open_or_create_collection_db(Path::new(":memory:"))?;
+        assert!(is_doltlite_db(&db));
+        Ok(())
+    }
+
+    #[test]
+    fn doltlite_schema_removes_sqlite_only_schema_features() {
+        let sql = doltlite_schema_sql(include_str!("schema11.sql"));
+        assert!(!sql.contains("--"));
+        assert!(!sql.contains("COLLATE unicase"));
+        assert!(!sql.contains("WITHOUT ROWID"));
+    }
+
+    #[test]
+    fn doltlite_created_collection_reopens_with_valid_notes_schema() -> Result<()> {
+        let tempfile = new_tempfile()?;
+
+        {
+            let _col = CollectionBuilder::default()
+                .set_collection_path(tempfile.path())
+                .build()?;
+        }
+
+        let col = CollectionBuilder::default()
+            .set_collection_path(tempfile.path())
+            .build()?;
+        let notes_schema: String = col.storage.db().query_row(
+            "select sql from sqlite_schema where type = 'table' and name = 'notes'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(!notes_schema.contains("--"));
+
+        Ok(())
+    }
 
     #[test]
     fn missing_memory_state_falls_back_to_sm2() -> Result<()> {

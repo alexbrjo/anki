@@ -314,13 +314,22 @@ pub(crate) fn open_or_create<P: AsRef<Path>>(path: P) -> error::Result<Connectio
         );
     }
 
-    db.pragma_update(None, "page_size", 4096)?;
-    db.pragma_update(None, "legacy_file_format", false)?;
-    db.pragma_update_and_check(None, "journal_mode", "wal", |_| Ok(()))?;
+    if !is_doltlite_db(&db) {
+        db.pragma_update(None, "page_size", 4096)?;
+        db.pragma_update(None, "legacy_file_format", false)?;
+        db.pragma_update_and_check(None, "journal_mode", "wal", |_| Ok(()))?;
+    }
 
     initial_db_setup(&mut db)?;
 
     Ok(db)
+}
+
+fn is_doltlite_db(db: &Connection) -> bool {
+    matches!(
+        db.query_row("select doltlite_engine()", [], |row| row.get::<_, String>(0)),
+        Ok(engine) if engine == "prolly"
+    )
 }
 
 fn initial_db_setup(db: &mut Connection) -> error::Result<()> {
@@ -333,10 +342,30 @@ fn initial_db_setup(db: &mut Connection) -> error::Result<()> {
     }
 
     db.execute("begin", [])?;
-    db.execute_batch(include_str!("schema.sql"))?;
+    if is_doltlite_db(db) {
+        db.execute_batch(&doltlite_schema_sql(include_str!("schema.sql")))?;
+    } else {
+        db.execute_batch(include_str!("schema.sql"))?;
+    }
     db.execute_batch("commit; vacuum; analyze;")?;
 
     Ok(())
+}
+
+fn doltlite_schema_sql(sql: &str) -> String {
+    let _ = sql;
+    "
+CREATE TABLE media (
+  fname text NOT NULL PRIMARY KEY,
+  csum text,
+  mtime int NOT NULL,
+  dirty int NOT NULL
+);
+CREATE INDEX idx_media_dirty ON media (dirty);
+CREATE TABLE meta (dirMod int, lastUsn int);
+INSERT INTO meta VALUES (0, 0);
+"
+    .to_string()
 }
 
 #[cfg(test)]

@@ -185,10 +185,12 @@ fn create_dummy_collection_file(tr: &I18n) -> Result<NamedTempFile> {
     let tempfile = new_tempfile()?;
     let mut dummy_col = CollectionBuilder::new(tempfile.path()).build()?;
     dummy_col.add_dummy_note(tr)?;
-    dummy_col
-        .storage
-        .db
-        .execute_batch("pragma page_size=512; pragma journal_mode=delete; vacuum;")?;
+    if !dummy_col.storage.is_doltlite() {
+        dummy_col
+            .storage
+            .db
+            .execute_batch("pragma page_size=512; pragma journal_mode=delete; vacuum;")?;
+    }
     dummy_col.close(Some(SchemaVersion::V11))?;
 
     Ok(tempfile)

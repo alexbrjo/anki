@@ -7,6 +7,9 @@ PROTOC = { value = "out/extracted/protoc/bin/protoc", relative = true }
 PYO3_NO_PYTHON = "1"
 MACOSX_DEPLOYMENT_TARGET = "11"
 PYTHONDONTWRITEBYTECODE = "1" # prevent junk files on Windows
+SQLITE3_LIB_DIR = { value = "out/doltlite-rusqlite/lib", relative = true }
+SQLITE3_INCLUDE_DIR = { value = "out/doltlite-rusqlite/include", relative = true }
+SQLITE3_STATIC = "1"
 
 [term]
 color = "always"

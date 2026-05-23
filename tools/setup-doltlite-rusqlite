@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage:
+  tools/setup-doltlite-rusqlite /path/to/doltlite/build-or-prefix
+
+Creates out/doltlite-rusqlite as a libsqlite3-sys-compatible shim over
+DoltLite. The input path may be:
+
+  - a DoltLite build directory containing libdoltlite.a and sqlite3.h
+  - an install prefix containing lib/libdoltlite.a and include/sqlite3.h
+
+After this runs, Cargo links rusqlite/libsqlite3-sys against DoltLite via the
+SQLITE3_* environment entries in .cargo/config.toml.
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" || $# -ne 1 ]]; then
+  usage
+  exit $([[ $# -eq 1 ]] && [[ "${1:-}" =~ ^(-h|--help)$ ]] && echo 0 || echo 2)
+fi
+
+src="$1"
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+shim="${repo}/out/doltlite-rusqlite"
+
+if [[ -f "${src}/libdoltlite.a" ]]; then
+  lib_src="${src}"
+  include_src="${src}"
+elif [[ -f "${src}/lib/libdoltlite.a" ]]; then
+  lib_src="${src}/lib"
+  include_src="${src}/include"
+else
+  echo "Could not find libdoltlite.a in '${src}' or '${src}/lib'." >&2
+  exit 1
+fi
+
+if [[ ! -f "${include_src}/sqlite3.h" ]]; then
+  echo "Could not find sqlite3.h in '${include_src}'." >&2
+  exit 1
+fi
+
+mkdir -p "${shim}/include" "${shim}/lib/pkgconfig"
+
+ln -sf "${include_src}/sqlite3.h" "${shim}/include/sqlite3.h"
+if [[ -f "${include_src}/sqlite3ext.h" ]]; then
+  ln -sf "${include_src}/sqlite3ext.h" "${shim}/include/sqlite3ext.h"
+fi
+if [[ -f "${include_src}/doltlite.h" ]]; then
+  ln -sf "${include_src}/doltlite.h" "${shim}/include/doltlite.h"
+fi
+
+ln -sf "${lib_src}/libdoltlite.a" "${shim}/lib/libsqlite3.a"
+if [[ -f "${lib_src}/libdoltlite.dylib" ]]; then
+  ln -sf "${lib_src}/libdoltlite.dylib" "${shim}/lib/libsqlite3.dylib"
+fi
+if [[ -f "${lib_src}/libdoltlite.so" ]]; then
+  ln -sf "${lib_src}/libdoltlite.so" "${shim}/lib/libsqlite3.so"
+fi
+
+cat >"${shim}/lib/pkgconfig/sqlite3.pc" <<EOF
+prefix=${shim}
+exec_prefix=\${prefix}
+libdir=\${prefix}/lib
+includedir=\${prefix}/include
+
+Name: SQLite
+Description: DoltLite presented as SQLite for libsqlite3-sys
+Version: 3.54.0
+Libs: -L\${libdir} -lsqlite3
+Libs.private: -lz -lpthread -lm
+Cflags: -I\${includedir}
+EOF
+
+echo "Prepared DoltLite rusqlite shim at ${shim}"

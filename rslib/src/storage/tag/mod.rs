@@ -174,8 +174,7 @@ impl SqliteStorage {
             .prepare_cached("select tag, usn from tags")?
             .query_and_then([], |r| Ok(Tag::new(r.get(0)?, r.get(1)?)))?
             .collect::<Result<Vec<Tag>>>()?;
-        self.db
-            .execute_batch(include_str!["../upgrades/schema17_upgrade.sql"])?;
+        self.execute_schema_sql(include_str!["../upgrades/schema17_upgrade.sql"])?;
         tags.into_iter()
             .try_for_each(|tag| -> Result<()> { self.register_tag(&tag) })
     }
