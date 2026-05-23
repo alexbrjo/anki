@@ -25,7 +25,7 @@ rusqlite = { workspace = true }
 # Destination side: the new Doltlite binding. Subprocess isolation is what
 # makes this safe — both libs export sqlite3_* symbols and can't coexist
 # in one process image, so this helper lives in its own binary.
-doltlite = { path = "../doltlite", default-features = false, features = ["tracer-stub"] }
+doltlite = { path = "../doltlite", default-features = false, features = ["tracer-stub", "collation"] }
 
 anyhow = { workspace = true }
 

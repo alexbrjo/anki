@@ -40,6 +40,15 @@ pub fn migrate(src: &Path, dst: &Path) -> Result<Stats> {
     .context("opening source SQLite DB")?;
 
     let dest = doltlite::Connection::open(dst).context("creating dest DB")?;
+
+    // Register stub collations under every name Anki's schema may
+    // reference. We never sort or equality-compare during the row copy,
+    // so a binary comparator is safe; rslib re-registers the real
+    // implementation when it next opens the file. Without these stubs,
+    // `CREATE TABLE x (name text COLLATE unicase)` would fail at the
+    // DDL-replay step with "no such collation sequence".
+    register_stub_collations(&dest).context("registering placeholder collations")?;
+
     dest.execute_batch("BEGIN")?;
 
     let table_ddls = read_ddls(&source, "table")?;
@@ -68,6 +77,15 @@ pub fn migrate(src: &Path, dst: &Path) -> Result<Stats> {
     dest.pragma_update(None, "application_id", DOLTLITE_APPLICATION_ID)?;
     dest.execute_batch("COMMIT")?;
     Ok(stats)
+}
+
+fn register_stub_collations(conn: &doltlite::Connection) -> doltlite::Result<()> {
+    // Add new names here whenever rslib introduces another custom
+    // collation in SqliteStorage::open_or_create_collection_db.
+    for name in ["unicase"] {
+        conn.create_collation(name, |a: &str, b: &str| a.cmp(b))?;
+    }
+    Ok(())
 }
 
 fn read_ddls(conn: &rusqlite::Connection, kind: &str) -> Result<Vec<(String, String)>> {

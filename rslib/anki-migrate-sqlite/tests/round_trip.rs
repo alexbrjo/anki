@@ -99,6 +99,43 @@ fn handles_blobs() {
 }
 
 #[test]
+fn handles_custom_collation_in_schema() {
+    // Regression test: real Anki collections declare
+    //   CREATE TABLE deck_config (..., name text COLLATE unicase, ...)
+    // and the migration helper has to register a placeholder so that
+    // DDL replay against the fresh Doltlite DB succeeds.
+    let tmp = TempDir::new().unwrap();
+    let src = tmp.path().join("with-collate.anki2");
+    let dst = tmp.path().join("with-collate-out.anki2");
+    {
+        let conn = Connection::open(&src).unwrap();
+        // Source needs the collation registered too (just for the
+        // CREATE TABLE). Use any comparator — content isn't checked.
+        conn.create_collation("unicase", |a: &str, b: &str| a.cmp(b))
+            .unwrap();
+        conn.execute_batch(
+            "CREATE TABLE deck_config (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL COLLATE unicase,
+                conf BLOB NOT NULL
+             );
+             INSERT INTO deck_config VALUES (1, 'Default', x'00');",
+        )
+        .unwrap();
+    }
+
+    migrate(&src, &dst).expect("migration with COLLATE unicase succeeds");
+
+    let dest = Connection::open(&dst).unwrap();
+    dest.create_collation("unicase", |a: &str, b: &str| a.cmp(b))
+        .unwrap();
+    let name: String = dest
+        .query_row("SELECT name FROM deck_config WHERE id = 1", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(name, "Default");
+}
+
+#[test]
 fn handles_null_values() {
     let tmp = TempDir::new().unwrap();
     let src = tmp.path().join("null.anki2");
