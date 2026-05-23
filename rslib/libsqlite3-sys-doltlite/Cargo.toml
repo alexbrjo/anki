@@ -1,0 +1,52 @@
+# This crate is a name-spoof of crates.io's `libsqlite3-sys` 0.34.x.
+# The workspace replaces upstream via `[patch.crates-io]`, so rusqlite
+# transparently links Doltlite (a SQLite fork) instead of stock SQLite.
+#
+# Why a spoof rather than a real fork: Doltlite preserves SQLite's C ABI
+# verbatim, so upstream's bindgen output and high-level rusqlite usage
+# are unchanged. We only replace the C source being compiled and the
+# build script that compiles it.
+#
+# Pin upstream version to 0.34.x to match rusqlite 0.36.
+
+[package]
+name = "libsqlite3-sys"
+version = "0.34.0"
+edition = "2021"
+authors = ["The rusqlite developers (upstream)", "Ankitects + Doltlite spoof"]
+build = "build.rs"
+links = "sqlite3"
+autolib = false
+autobins = false
+description = "Doltlite-backed spoof of libsqlite3-sys; see Anki workspace [patch.crates-io]"
+license = "MIT"
+
+[features]
+# Upstream's bundled / buildtime / sqlcipher / loadable_extension matrix
+# is collapsed: we always compile our vendored Doltlite amalgamation.
+# Features are listed so cargo accepts feature flags from rusqlite, but
+# they are no-ops here.
+default = []
+bundled = []
+bundled-windows = []
+bundled_bindings = []
+bundled-sqlcipher = []
+bundled-sqlcipher-vendored-openssl = []
+buildtime_bindgen = []
+column_metadata = []
+in_gecko = []
+loadable_extension = []
+min_sqlite_version_3_14_0 = []
+preupdate_hook = []
+session = []
+sqlcipher = []
+unlock_notify = []
+wasm32-wasi-vfs = []
+with-asan = []
+
+[lib]
+name = "libsqlite3_sys"
+path = "src/lib.rs"
+
+[build-dependencies]
+cc = "1.2"

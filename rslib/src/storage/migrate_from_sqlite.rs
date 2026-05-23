@@ -249,6 +249,25 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
 
+    /// Sanity check that the in-process SQL engine is actually Doltlite,
+    /// not stock SQLite. Doltlite identifies itself via the `alt1`
+    /// suffix on `sqlite_source_id()`.
+    #[test]
+    fn runtime_is_doltlite() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let source_id: String = conn
+            .query_row("SELECT sqlite_source_id()", [], |r| r.get(0))
+            .unwrap();
+        let version: String = conn
+            .query_row("SELECT sqlite_version()", [], |r| r.get(0))
+            .unwrap();
+        eprintln!("linked engine: version={version} sourceid={source_id}");
+        assert!(
+            source_id.contains("alt1"),
+            "expected Doltlite marker 'alt1' in sourceid, got: {source_id}"
+        );
+    }
+
     #[test]
     fn with_suffix_appends() {
         assert_eq!(
