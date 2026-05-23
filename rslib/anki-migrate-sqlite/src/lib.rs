@@ -41,13 +41,21 @@ pub fn migrate(src: &Path, dst: &Path) -> Result<Stats> {
 
     let dest = doltlite::Connection::open(dst).context("creating dest DB")?;
 
-    // Register stub collations under every name Anki's schema may
-    // reference. We never sort or equality-compare during the row copy,
-    // so a binary comparator is safe; rslib re-registers the real
-    // implementation when it next opens the file. Without these stubs,
-    // `CREATE TABLE x (name text COLLATE unicase)` would fail at the
-    // DDL-replay step with "no such collation sequence".
-    register_stub_collations(&dest).context("registering placeholder collations")?;
+    // Register stub collations on BOTH connections under every name
+    // Anki's schema may reference. Source needs them to prepare
+    // SELECT statements against tables that declare `COLLATE unicase`
+    // on a column (otherwise: SQLITE_ERROR_MISSING_COLLSEQ at prepare
+    // time). Dest needs them so DDL replay accepts the CREATE TABLE
+    // and so INSERTs into `WITHOUT ROWID` tables / unique indexes
+    // succeed.
+    //
+    // A binary comparator is safe: we never sort or equality-compare
+    // through the collation during migration, and rslib re-registers
+    // the real `unicase` implementation when it next opens the file.
+    register_stub_collations_rusqlite(&source)
+        .context("registering placeholder collations on source")?;
+    register_stub_collations(&dest)
+        .context("registering placeholder collations on dest")?;
 
     dest.execute_batch("BEGIN")?;
 
@@ -79,10 +87,22 @@ pub fn migrate(src: &Path, dst: &Path) -> Result<Stats> {
     Ok(stats)
 }
 
+/// Names of every custom collation that may appear in an Anki schema.
+/// Keep in sync with `SqliteStorage::open_or_create_collection_db` in
+/// rslib (it currently registers only `unicase`).
+const STUB_COLLATIONS: &[&str] = &["unicase"];
+
 fn register_stub_collations(conn: &doltlite::Connection) -> doltlite::Result<()> {
-    // Add new names here whenever rslib introduces another custom
-    // collation in SqliteStorage::open_or_create_collection_db.
-    for name in ["unicase"] {
+    for &name in STUB_COLLATIONS {
+        conn.create_collation(name, |a: &str, b: &str| a.cmp(b))?;
+    }
+    Ok(())
+}
+
+fn register_stub_collations_rusqlite(
+    conn: &rusqlite::Connection,
+) -> rusqlite::Result<()> {
+    for &name in STUB_COLLATIONS {
         conn.create_collation(name, |a: &str, b: &str| a.cmp(b))?;
     }
     Ok(())

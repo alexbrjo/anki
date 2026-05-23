@@ -99,6 +99,45 @@ fn handles_blobs() {
 }
 
 #[test]
+fn handles_without_rowid_collated_table() {
+    // Regression: real Anki has `fields` declared as
+    //   CREATE TABLE fields (... name text COLLATE unicase, ...) WITHOUT ROWID;
+    // with a UNIQUE INDEX on name. The SELECT on the source side needs
+    // the collation registered to prepare against this schema.
+    let tmp = TempDir::new().unwrap();
+    let src = tmp.path().join("fields.anki2");
+    let dst = tmp.path().join("fields-out.anki2");
+    {
+        let conn = Connection::open(&src).unwrap();
+        conn.create_collation("unicase", |a: &str, b: &str| a.cmp(b))
+            .unwrap();
+        conn.execute_batch(
+            "CREATE TABLE fields (
+                ntid INTEGER NOT NULL,
+                ord INTEGER NOT NULL,
+                name TEXT NOT NULL COLLATE unicase,
+                config BLOB NOT NULL,
+                PRIMARY KEY (ntid, ord)
+             ) WITHOUT ROWID;
+             CREATE UNIQUE INDEX idx_fields_name_ntid ON fields (name, ntid);
+             INSERT INTO fields VALUES (1, 0, 'Front', x'00');
+             INSERT INTO fields VALUES (1, 1, 'Back', x'00');",
+        )
+        .unwrap();
+    }
+
+    migrate(&src, &dst).expect("migration of WITHOUT ROWID + COLLATE succeeds");
+
+    let dest = Connection::open(&dst).unwrap();
+    dest.create_collation("unicase", |a: &str, b: &str| a.cmp(b))
+        .unwrap();
+    let count: i64 = dest
+        .query_row("SELECT count(*) FROM fields", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 2);
+}
+
+#[test]
 fn handles_custom_collation_in_schema() {
     // Regression test: real Anki collections declare
     //   CREATE TABLE deck_config (..., name text COLLATE unicase, ...)
