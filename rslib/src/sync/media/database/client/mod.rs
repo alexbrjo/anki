@@ -305,7 +305,24 @@ fn trace(event: rusqlite::trace::TraceEvent) {
 }
 
 pub(crate) fn open_or_create<P: AsRef<Path>>(path: P) -> error::Result<Connection> {
+    // If a legacy SQLite-format media DB exists at this path, migrate it
+    // in place to the Doltlite format before opening. See the collection
+    // open path for the parallel call.
+    crate::storage::migrate_from_sqlite::ensure_doltlite(path.as_ref())?;
+
     let mut db = Connection::open(path)?;
+    // Stamp the Doltlite sentinel on freshly-created media DBs so we
+    // recognise them on subsequent opens.
+    {
+        let current: i32 = db.pragma_query_value(None, "application_id", |r| r.get(0))?;
+        if current != crate::storage::migrate_from_sqlite::DOLTLITE_APPLICATION_ID {
+            db.pragma_update(
+                None,
+                "application_id",
+                crate::storage::migrate_from_sqlite::DOLTLITE_APPLICATION_ID,
+            )?;
+        }
+    }
 
     if std::env::var("TRACESQL").is_ok() {
         db.trace_v2(

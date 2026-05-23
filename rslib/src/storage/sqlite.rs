@@ -51,7 +51,16 @@ pub struct SqliteStorage {
 }
 
 fn open_or_create_collection_db(path: &Path) -> Result<Connection> {
-    let db = Connection::open(path)?;
+    // If this is a pre-Doltlite SQLite file, migrate it in place before
+    // opening. No-op for fresh files (engine creates them) and for files
+    // already stamped with the Doltlite application_id sentinel.
+    crate::storage::migrate_from_sqlite::ensure_doltlite(path)?;
+
+    let mut db = Connection::open(path)?;
+
+    // For freshly-created collections, stamp the Doltlite sentinel so
+    // subsequent opens skip the migration shim.
+    stamp_doltlite_sentinel_if_fresh(&mut db)?;
 
     if std::env::var("TRACESQL").is_ok() {
         db.trace_v2(
@@ -88,6 +97,21 @@ fn open_or_create_collection_db(path: &Path) -> Result<Connection> {
     db.create_collation("unicase", unicase_compare)?;
 
     Ok(db)
+}
+
+/// Idempotently stamp the Doltlite application_id sentinel so the
+/// migration shim recognises this file on subsequent opens. Reading the
+/// pragma first avoids a write on every open of an already-stamped file.
+fn stamp_doltlite_sentinel_if_fresh(db: &mut Connection) -> Result<()> {
+    let current: i32 = db.pragma_query_value(None, "application_id", |r| r.get(0))?;
+    if current != crate::storage::migrate_from_sqlite::DOLTLITE_APPLICATION_ID {
+        db.pragma_update(
+            None,
+            "application_id",
+            crate::storage::migrate_from_sqlite::DOLTLITE_APPLICATION_ID,
+        )?;
+    }
+    Ok(())
 }
 
 impl SqliteStorage {

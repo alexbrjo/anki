@@ -8,6 +8,10 @@ publish = false
 rust-version.workspace = true
 description = "One-shot helper: dump a legacy SQLite Anki DB into a fresh Doltlite-format DB"
 
+[lib]
+name = "anki_migrate_sqlite"
+path = "src/lib.rs"
+
 [[bin]]
 name = "anki-migrate-sqlite"
 path = "src/main.rs"
@@ -24,3 +28,6 @@ rusqlite = { workspace = true }
 doltlite = { path = "../doltlite", default-features = false, features = ["tracer-stub"] }
 
 anyhow = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

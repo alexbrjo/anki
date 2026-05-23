@@ -171,6 +171,7 @@ dependencies = [
  "anyhow",
  "doltlite",
  "rusqlite",
+ "tempfile",
 ]
 
 [[package]]
