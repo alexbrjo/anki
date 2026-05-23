@@ -311,18 +311,8 @@ pub(crate) fn open_or_create<P: AsRef<Path>>(path: P) -> error::Result<Connectio
     crate::storage::migrate_from_sqlite::ensure_doltlite(path.as_ref())?;
 
     let mut db = Connection::open(path)?;
-    // Stamp the Doltlite sentinel on freshly-created media DBs so we
-    // recognise them on subsequent opens.
-    {
-        let current: i32 = db.pragma_query_value(None, "application_id", |r| r.get(0))?;
-        if current != crate::storage::migrate_from_sqlite::DOLTLITE_APPLICATION_ID {
-            db.pragma_update(
-                None,
-                "application_id",
-                crate::storage::migrate_from_sqlite::DOLTLITE_APPLICATION_ID,
-            )?;
-        }
-    }
+    // Prolly files self-identify by their 4-byte `CTLD` magic; no
+    // application_id sentinel needed (the pragma would error anyway).
 
     if std::env::var("TRACESQL").is_ok() {
         db.trace_v2(
@@ -331,9 +321,18 @@ pub(crate) fn open_or_create<P: AsRef<Path>>(path: P) -> error::Result<Connectio
         );
     }
 
-    db.pragma_update(None, "page_size", 4096)?;
-    db.pragma_update(None, "legacy_file_format", false)?;
-    db.pragma_update_and_check(None, "journal_mode", "wal", |_| Ok(()))?;
+    // B-tree-era pragmas only — prolly tree backend handles paging
+    // and durability natively. See SqliteStorage::open_or_create_collection_db.
+    let on_prolly = db
+        .query_row("SELECT doltlite_engine()", [], |r| r.get::<_, String>(0))
+        .ok()
+        .as_deref()
+        == Some("prolly");
+    if !on_prolly {
+        db.pragma_update(None, "page_size", 4096)?;
+        db.pragma_update(None, "legacy_file_format", false)?;
+        db.pragma_update_and_check(None, "journal_mode", "wal", |_| Ok(()))?;
+    }
 
     initial_db_setup(&mut db)?;
 

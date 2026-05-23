@@ -19,7 +19,6 @@ use rusqlite::params;
 use rusqlite::trace::TraceEvent;
 use rusqlite::Connection;
 use serde_json::Value;
-use unicase::UniCase;
 
 use super::upgrades::SCHEMA_MAX_VERSION;
 use super::upgrades::SCHEMA_MIN_VERSION;
@@ -35,9 +34,13 @@ use crate::storage::card::data::CardData;
 use crate::text::without_combining;
 use crate::text::CowMapping;
 
-fn unicase_compare(s1: &str, s2: &str) -> Ordering {
-    UniCase::new(s1).cmp(&UniCase::new(s2))
-}
+// `unicase_compare` removed when we moved to Doltlite-prolly. Custom
+// collations aren't registrable in prolly mode (they'd break content
+// addressing), and our schema drops the COLLATE unicase annotations
+// to match. Result: deck/notetype/field/template/deck_config name
+// comparisons are now BINARY (case-sensitive). "Default" and
+// "default" are distinct rows. UX consequence accepted as the
+// Doltlite-minded tradeoff.
 
 // fixme: rollback savepoint when tags not changed
 // fixme: need to drop out of wal prior to vacuuming to fix page size of older
@@ -56,11 +59,12 @@ fn open_or_create_collection_db(path: &Path) -> Result<Connection> {
     // already stamped with the Doltlite application_id sentinel.
     crate::storage::migrate_from_sqlite::ensure_doltlite(path)?;
 
-    let mut db = Connection::open(path)?;
-
-    // For freshly-created collections, stamp the Doltlite sentinel so
-    // subsequent opens skip the migration shim.
-    stamp_doltlite_sentinel_if_fresh(&mut db)?;
+    let db = Connection::open(path)?;
+    // Note: we used to stamp PRAGMA application_id as a Doltlite
+    // sentinel. With the prolly engine that's both unnecessary
+    // (Doltlite-native files self-identify by their 4-byte CTLD magic)
+    // and impossible (the prolly backend rejects application_id
+    // updates).
 
     if std::env::var("TRACESQL").is_ok() {
         db.trace_v2(
@@ -71,11 +75,18 @@ fn open_or_create_collection_db(path: &Path) -> Result<Connection> {
 
     db.busy_timeout(std::time::Duration::from_secs(0))?;
 
-    db.pragma_update(None, "locking_mode", "exclusive")?;
-    db.pragma_update(None, "page_size", 4096)?;
+    // Doltlite's prolly-tree backend handles locking, paging, and
+    // durability natively via its content-addressed chunk store —
+    // these B-tree-era pragmas either error ("journal_mode is not
+    // configurable on doltlite-format databases") or are silent
+    // no-ops. cache_size is the one that's meaningful on prolly.
+    if !is_prolly_engine(&db) {
+        db.pragma_update(None, "locking_mode", "exclusive")?;
+        db.pragma_update(None, "page_size", 4096)?;
+        db.pragma_update(None, "legacy_file_format", false)?;
+        db.pragma_update(None, "journal_mode", "wal")?;
+    }
     db.pragma_update(None, "cache_size", -40 * 1024)?;
-    db.pragma_update(None, "legacy_file_format", false)?;
-    db.pragma_update(None, "journal_mode", "wal")?;
     // Android has no /tmp folder, and fails in the default config.
     #[cfg(target_os = "android")]
     db.pragma_update(None, "temp_store", &"memory")?;
@@ -94,24 +105,20 @@ fn open_or_create_collection_db(path: &Path) -> Result<Connection> {
     add_extract_fsrs_retrievability(&db)?;
     add_extract_fsrs_relative_retrievability(&db)?;
 
-    db.create_collation("unicase", unicase_compare)?;
+    // No `unicase` collation: prolly mode disallows user collations.
+    // Schema has been migrated to drop COLLATE unicase annotations.
 
     Ok(db)
 }
 
-/// Idempotently stamp the Doltlite application_id sentinel so the
-/// migration shim recognises this file on subsequent opens. Reading the
-/// pragma first avoids a write on every open of an already-stamped file.
-fn stamp_doltlite_sentinel_if_fresh(db: &mut Connection) -> Result<()> {
-    let current: i32 = db.pragma_query_value(None, "application_id", |r| r.get(0))?;
-    if current != crate::storage::migrate_from_sqlite::DOLTLITE_APPLICATION_ID {
-        db.pragma_update(
-            None,
-            "application_id",
-            crate::storage::migrate_from_sqlite::DOLTLITE_APPLICATION_ID,
-        )?;
-    }
-    Ok(())
+/// True when the linked engine is running the prolly-tree backend.
+/// `doltlite_engine()` is a Doltlite-only SQL function; on stock SQLite
+/// or a misconfigured build the query errors and we fall back to false.
+fn is_prolly_engine(db: &Connection) -> bool {
+    db.query_row("SELECT doltlite_engine()", [], |r| r.get::<_, String>(0))
+        .ok()
+        .as_deref()
+        == Some("prolly")
 }
 
 impl SqliteStorage {
@@ -577,7 +584,8 @@ impl SqliteStorage {
     pub(crate) fn close(self, desired_version: Option<SchemaVersion>) -> Result<()> {
         if let Some(version) = desired_version {
             self.downgrade_to(version)?;
-            if version.has_journal_mode_delete() {
+            // journal_mode is meaningless on prolly; legacy engine errors.
+            if version.has_journal_mode_delete() && !is_prolly_engine(&self.db) {
                 self.db.pragma_update(None, "journal_mode", "delete")?;
             }
         }
@@ -592,6 +600,10 @@ impl SqliteStorage {
                 "active transaction",
                 DbErrorKind::Other,
             ));
+        }
+        // Prolly has no WAL — commits are durable via the chunk store.
+        if is_prolly_engine(&self.db) {
+            return Ok(());
         }
         self.db
             .query_row_and_then("pragma wal_checkpoint(truncate)", [], |row| {

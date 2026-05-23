@@ -41,28 +41,26 @@ pub fn migrate(src: &Path, dst: &Path) -> Result<Stats> {
 
     let dest = doltlite::Connection::open(dst).context("creating dest DB")?;
 
-    // Register stub collations on BOTH connections under every name
-    // Anki's schema may reference. Source needs them to prepare
-    // SELECT statements against tables that declare `COLLATE unicase`
-    // on a column (otherwise: SQLITE_ERROR_MISSING_COLLSEQ at prepare
-    // time). Dest needs them so DDL replay accepts the CREATE TABLE
-    // and so INSERTs into `WITHOUT ROWID` tables / unique indexes
-    // succeed.
-    //
-    // A binary comparator is safe: we never sort or equality-compare
-    // through the collation during migration, and rslib re-registers
-    // the real `unicase` implementation when it next opens the file.
+    // Source still needs the legacy `unicase` collation registered to
+    // prepare SELECTs over tables that declare `name text COLLATE
+    // unicase` (source is stock SQLite, accepts custom collations).
     register_stub_collations_rusqlite(&source)
-        .context("registering placeholder collations on source")?;
-    register_stub_collations(&dest)
-        .context("registering placeholder collations on dest")?;
+        .context("registering placeholder collation on source")?;
+
+    // We do NOT register on dest. Doltlite-prolly disallows user
+    // collations entirely (see PROLLY_BLOCKER.md). Instead we strip
+    // `COLLATE unicase` from every DDL string before replay — the
+    // post-migration schema is fully prolly-friendly with BINARY
+    // collation. Users lose case-insensitive name uniqueness;
+    // documented in the migration changelog.
 
     dest.execute_batch("BEGIN")?;
 
     let table_ddls = read_ddls(&source, "table")?;
     for (_, ddl) in &table_ddls {
-        dest.execute_batch(ddl)
-            .with_context(|| format!("replaying table DDL: {ddl}"))?;
+        let sanitized = sanitize_ddl(ddl);
+        dest.execute_batch(&sanitized)
+            .with_context(|| format!("replaying table DDL: {sanitized}"))?;
     }
 
     let mut stats = Stats::default();
@@ -75,7 +73,8 @@ pub fn migrate(src: &Path, dst: &Path) -> Result<Stats> {
 
     for kind in ["index", "trigger", "view"] {
         for (_, ddl) in read_ddls(&source, kind)? {
-            dest.execute_batch(&ddl)
+            let sanitized = sanitize_ddl(&ddl);
+            dest.execute_batch(&sanitized)
                 .with_context(|| format!("replaying {kind} DDL"))?;
         }
     }
@@ -87,17 +86,11 @@ pub fn migrate(src: &Path, dst: &Path) -> Result<Stats> {
     Ok(stats)
 }
 
-/// Names of every custom collation that may appear in an Anki schema.
-/// Keep in sync with `SqliteStorage::open_or_create_collection_db` in
-/// rslib (it currently registers only `unicase`).
+/// Names of every custom collation that may appear in a legacy Anki
+/// schema. Only the SOURCE side needs these registered (the dest is
+/// Doltlite-prolly, which doesn't permit user collations — we strip
+/// the COLLATE annotations instead via `strip_collate_unicase`).
 const STUB_COLLATIONS: &[&str] = &["unicase"];
-
-fn register_stub_collations(conn: &doltlite::Connection) -> doltlite::Result<()> {
-    for &name in STUB_COLLATIONS {
-        conn.create_collation(name, |a: &str, b: &str| a.cmp(b))?;
-    }
-    Ok(())
-}
 
 fn register_stub_collations_rusqlite(
     conn: &rusqlite::Connection,
@@ -106,6 +99,160 @@ fn register_stub_collations_rusqlite(
         conn.create_collation(name, |a: &str, b: &str| a.cmp(b))?;
     }
     Ok(())
+}
+
+/// Normalise a DDL string read from a legacy SQLite source into a form
+/// Doltlite-prolly accepts:
+///   - strips `COLLATE unicase` (prolly disallows user collations)
+///   - strips `-- line comments` (prolly's sqlite_master round-trip
+///     truncates at line comments and reports the schema as corrupt)
+///
+/// The result is semantically equivalent to the original for everything
+/// Anki cares about, but is safe to replay against a prolly engine.
+fn sanitize_ddl(ddl: &str) -> String {
+    strip_line_comments(&strip_collate_unicase(ddl))
+}
+
+/// Remove `-- ... \n` line comments from a DDL string. Block comments
+/// (`/* ... */`) are kept since prolly handles them fine.
+fn strip_line_comments(ddl: &str) -> String {
+    let mut out = String::with_capacity(ddl.len());
+    let bytes = ddl.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if i + 1 < bytes.len() && bytes[i] == b'-' && bytes[i + 1] == b'-' {
+            // Skip to end of line.
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+        } else {
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Remove `COLLATE unicase` substrings from a DDL string so it can be
+/// replayed against a Doltlite-prolly connection. We accept the
+/// semantic loss (case-sensitive name uniqueness instead of Unicode
+/// case-insensitive) as the Doltlite-minded tradeoff.
+///
+/// Match is case-insensitive on the keyword + collation name, with
+/// arbitrary whitespace allowed between them. Handles both
+/// `name text COLLATE unicase,` and trailing forms like
+/// `tag text NOT NULL PRIMARY KEY COLLATE unicase`.
+fn strip_collate_unicase(ddl: &str) -> String {
+    // Walk the string char-by-char, matching `COLLATE\s+unicase` case-insensitively.
+    let bytes = ddl.as_bytes();
+    let mut out = String::with_capacity(ddl.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if let Some(end) = try_match_collate_unicase(&bytes[i..]) {
+            i += end;
+        } else {
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// If `slice` starts with `COLLATE\s+unicase` (case-insensitive,
+/// followed by a non-identifier char or EOI), return the length
+/// consumed. Otherwise None.
+fn try_match_collate_unicase(slice: &[u8]) -> Option<usize> {
+    const KW: &[u8] = b"collate";
+    const NAME: &[u8] = b"unicase";
+    if slice.len() < KW.len() {
+        return None;
+    }
+    for (i, &b) in KW.iter().enumerate() {
+        if slice[i].to_ascii_lowercase() != b {
+            return None;
+        }
+    }
+    let mut j = KW.len();
+    let mut saw_ws = false;
+    while j < slice.len() && (slice[j] == b' ' || slice[j] == b'\t' || slice[j] == b'\n') {
+        saw_ws = true;
+        j += 1;
+    }
+    if !saw_ws || slice.len() - j < NAME.len() {
+        return None;
+    }
+    for (i, &b) in NAME.iter().enumerate() {
+        if slice[j + i].to_ascii_lowercase() != b {
+            return None;
+        }
+    }
+    let end = j + NAME.len();
+    // Ensure the match doesn't extend into a longer identifier
+    // (e.g. `unicase_foo`).
+    if let Some(&next) = slice.get(end) {
+        if next.is_ascii_alphanumeric() || next == b'_' {
+            return None;
+        }
+    }
+    Some(end)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{sanitize_ddl, strip_collate_unicase, strip_line_comments};
+
+    #[test]
+    fn sanitize_strips_collate_and_comments() {
+        let ddl = "CREATE TABLE t (\n  id INTEGER, -- comment\n  name TEXT COLLATE unicase\n);";
+        let out = sanitize_ddl(ddl);
+        assert!(!out.to_lowercase().contains("collate"));
+        assert!(!out.contains("--"));
+        assert!(out.contains("CREATE TABLE t"));
+    }
+
+    #[test]
+    fn strip_line_comments_leaves_block_comments() {
+        assert_eq!(
+            strip_line_comments("a -- gone\nb /* kept */ c"),
+            "a \nb /* kept */ c"
+        );
+    }
+
+    #[test]
+    fn strips_lowercase() {
+        assert_eq!(
+            strip_collate_unicase("name text COLLATE unicase NOT NULL"),
+            "name text  NOT NULL"
+        );
+    }
+
+    #[test]
+    fn strips_mixed_case() {
+        assert_eq!(
+            strip_collate_unicase("Name TEXT collate UNICASE,"),
+            "Name TEXT ,"
+        );
+    }
+
+    #[test]
+    fn strips_multiline() {
+        assert_eq!(
+            strip_collate_unicase("name text NOT NULL COLLATE\n   unicase\n,"),
+            "name text NOT NULL \n,"
+        );
+    }
+
+    #[test]
+    fn leaves_other_collations_alone() {
+        let ddl = "name text COLLATE nocase NOT NULL";
+        assert_eq!(strip_collate_unicase(ddl), ddl);
+    }
+
+    #[test]
+    fn leaves_unicase_substring_alone() {
+        let ddl = "comment text -- contains the word collate unicase_v2 here";
+        assert_eq!(strip_collate_unicase(ddl), ddl);
+    }
 }
 
 fn read_ddls(conn: &rusqlite::Connection, kind: &str) -> Result<Vec<(String, String)>> {

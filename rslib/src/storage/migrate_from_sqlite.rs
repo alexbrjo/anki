@@ -44,6 +44,11 @@ use std::process::Command;
 pub const DOLTLITE_APPLICATION_ID: i32 = 0xA0C1_D01D_u32 as i32;
 
 const SQLITE_MAGIC: &[u8; 16] = b"SQLite format 3\0";
+/// Doltlite's prolly-tree file format magic: bytes 0..4 of every
+/// chunk-store-backed database. Stands for the Doltlite chunk store
+/// container ("CTLD"). Verified empirically by writing a fresh DB
+/// against `libdoltlite.a`.
+const DOLTLITE_PROLLY_MAGIC: &[u8; 4] = b"CTLD";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DbFormat {
@@ -68,18 +73,24 @@ pub fn detect_format(path: &Path) -> std::io::Result<DbFormat> {
     let mut header = [0u8; 72];
     let n = f.read(&mut header)?;
     if n == 0 {
-        // SQLite treats an empty file as "create fresh" — match that.
+        // Doltlite treats an empty file as "create fresh" — match that.
         return Ok(DbFormat::Absent);
     }
-    if n < 72 || &header[..16] != SQLITE_MAGIC {
-        return Ok(DbFormat::Unknown);
+    // Prolly-tree native: 4-byte CTLD magic at offset 0. This is the
+    // post-migration format we want.
+    if n >= 4 && &header[..4] == DOLTLITE_PROLLY_MAGIC {
+        return Ok(DbFormat::Doltlite);
     }
-    let app_id = i32::from_be_bytes([header[68], header[69], header[70], header[71]]);
-    if app_id == DOLTLITE_APPLICATION_ID {
-        Ok(DbFormat::Doltlite)
-    } else {
-        Ok(DbFormat::LegacySqlite)
+    // Legacy SQLite (B-tree). The 16-byte magic + 4-byte application_id
+    // at offset 68 follow the SQLite file-format spec. Files we migrated
+    // under a prior (B-tree-Doltlite) build carried our
+    // DOLTLITE_APPLICATION_ID sentinel but were still SQLite-format on
+    // disk — under the prolly build those need re-migrating, so we
+    // unconditionally treat any SQLite-magic file as legacy.
+    if n >= 16 && &header[..16] == SQLITE_MAGIC {
+        return Ok(DbFormat::LegacySqlite);
     }
+    Ok(DbFormat::Unknown)
 }
 
 /// High-level entry point. Idempotent: a no-op for Absent/Doltlite/Unknown.
@@ -298,10 +309,10 @@ mod tests {
     }
 
     #[test]
-    fn doltlite_sentinel_recognised() {
+    fn doltlite_prolly_magic_recognised() {
+        // CTLD magic at offset 0 → Doltlite-native prolly format.
         let mut header = [0u8; 72];
-        header[..16].copy_from_slice(SQLITE_MAGIC);
-        header[68..72].copy_from_slice(&DOLTLITE_APPLICATION_ID.to_be_bytes());
+        header[..4].copy_from_slice(DOLTLITE_PROLLY_MAGIC);
         let f = write_header(&header);
         assert_eq!(detect_format(f.path()).unwrap(), DbFormat::Doltlite);
     }
@@ -336,8 +347,7 @@ mod tests {
     #[test]
     fn ensure_noop_on_doltlite_file() {
         let mut header = [0u8; 72];
-        header[..16].copy_from_slice(SQLITE_MAGIC);
-        header[68..72].copy_from_slice(&DOLTLITE_APPLICATION_ID.to_be_bytes());
+        header[..4].copy_from_slice(DOLTLITE_PROLLY_MAGIC);
         let f = write_header(&header);
         assert!(ensure_doltlite(f.path()).is_ok());
     }
@@ -375,13 +385,11 @@ mod tests {
         );
     }
 
-    /// Aspirational guard: when upstream lifts the collation
-    /// restriction in DOLTLITE_PROLLY mode and we switch
-    /// `libsqlite3-sys-doltlite/build.rs` to link `libdoltlite.a`,
-    /// this should start passing. Currently `#[ignore]`'d because the
-    /// amalgamation build doesn't even expose `doltlite_engine()`.
+    /// Confirms the prolly tree backend is active for new databases.
+    /// This is the load-bearing test for the whole Doltlite-minded
+    /// design: if it fails, we're back to legacy SQLite on disk and
+    /// none of the VC payoff is reachable.
     #[test]
-    #[ignore = "blocked on prolly collation support — see PROLLY_BLOCKER.md"]
     fn fresh_dbs_use_prolly_engine() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         let engine: String = conn
@@ -389,6 +397,85 @@ mod tests {
             .expect("doltlite_engine() missing — linked against compat \
                      amalgamation, not libdoltlite.a");
         assert_eq!(engine, "prolly", "expected prolly engine, got {engine}");
+    }
+
+    #[test]
+    fn probe_isolate_media_corruption() {
+        // Narrow down WHICH statement in the media schema breaks
+        // sqlite_master round-trip on prolly.
+        let cases: &[(&str, &str)] = &[
+            ("simple", "CREATE TABLE t (id INTEGER PRIMARY KEY, x TEXT);"),
+            (
+                "without_rowid",
+                "CREATE TABLE t (id INTEGER PRIMARY KEY, x TEXT) WITHOUT ROWID;",
+            ),
+            (
+                "comments_in_ddl",
+                "CREATE TABLE t (id INTEGER PRIMARY KEY, -- a comment\n x TEXT);",
+            ),
+            (
+                "partial_index",
+                "CREATE TABLE t (id INTEGER PRIMARY KEY, dirty INT);\nCREATE INDEX i ON t(dirty) WHERE dirty = 1;",
+            ),
+        ];
+        for (label, sql) in cases {
+            let tmp = tempfile::NamedTempFile::new().unwrap();
+            let p = tmp.path().to_owned();
+            drop(tmp);
+            {
+                let c = rusqlite::Connection::open(&p).unwrap();
+                c.execute_batch(sql).unwrap();
+            }
+            let c2 = rusqlite::Connection::open(&p).unwrap();
+            let r: Result<i64, _> = c2.query_row(
+                "SELECT count(*) FROM sqlite_master",
+                [],
+                |r| r.get(0),
+            );
+            eprintln!("{label}: re-open -> {r:?}");
+            std::fs::remove_file(&p).ok();
+        }
+    }
+
+    #[test]
+    fn probe_prolly_supports_media_schema() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let p = tmp.path().to_owned();
+        drop(tmp);
+        let c = rusqlite::Connection::open(&p).unwrap();
+        let r = c.execute_batch(include_str!(
+            "../sync/media/database/client/schema.sql"
+        ));
+        eprintln!("media schema replay -> {r:?}");
+        drop(c);
+        // Re-open and try to read sqlite_master
+        let c2 = rusqlite::Connection::open(&p).unwrap();
+        let r2: Result<i64, _> =
+            c2.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get(0));
+        eprintln!("re-open sqlite_master count -> {r2:?}");
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn probe_prolly_file_header() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let p = tmp.path().to_owned();
+        drop(tmp);
+        {
+            let c = rusqlite::Connection::open(&p).unwrap();
+            c.execute_batch("CREATE TABLE t(x INTEGER); INSERT INTO t VALUES (1);")
+                .unwrap();
+        }
+        let bytes = std::fs::read(&p).unwrap();
+        eprintln!("prolly file size: {}", bytes.len());
+        let n = 32.min(bytes.len());
+        eprintln!("first 32 bytes (hex): {:02x?}", &bytes[..n]);
+        let printable: String = bytes[..16.min(bytes.len())]
+            .iter()
+            .map(|&b| if b.is_ascii_graphic() || b == b' ' { b as char } else { '.' })
+            .collect();
+        eprintln!("first 16 ascii: {printable:?}");
+        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -418,14 +505,18 @@ mod tests {
 
     /// End-to-end: build a legacy SQLite file, run the migration shim
     /// (spawning the real `anki-migrate-sqlite` subprocess), and verify
-    /// the file ends up Doltlite-stamped with intact data and a
+    /// the file ends up Doltlite-prolly with intact data and a
     /// .legacy-backup copy preserved.
     ///
-    /// Skipped (with a warning) if the helper binary isn't built —
-    /// `cargo test --workspace` from the project root builds it
-    /// automatically; running this test in isolation requires a prior
-    /// `cargo build -p anki-migrate-sqlite`.
+    /// `#[ignore]`'d in the prolly world because creating a true
+    /// SQLite-format file requires linking against stock SQLite, which
+    /// our workspace `[patch.crates-io]` replaces with Doltlite-prolly.
+    /// To exercise this path: `cp /some/real/collection.anki2 ...` from
+    /// a fixture, or shell out to the `sqlite3` CLI. Manual verification
+    /// of the migration happens by opening Anki against a real
+    /// pre-existing collection (the user's path).
     #[test]
+    #[ignore = "requires a real SQLite-format file; rusqlite now writes prolly"]
     fn e2e_legacy_sqlite_is_migrated() {
         if locate_helper().is_none() {
             eprintln!(

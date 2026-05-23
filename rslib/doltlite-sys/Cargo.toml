@@ -20,4 +20,4 @@ vendored = []
 [dependencies]
 
 [build-dependencies]
-cc = "1.2"
+# (no cc — we link the pre-built libdoltlite.a from vendor/)
