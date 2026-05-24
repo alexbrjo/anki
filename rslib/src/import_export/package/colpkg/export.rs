@@ -170,17 +170,19 @@ fn write_collection(
     Ok(())
 }
 
-fn write_dummy_collection(zip: &mut ZipWriter<File>, tr: &I18n) -> Result<()> {
-    let mut tempfile = create_dummy_collection_file(tr)?;
-    zip.start_file(
-        Version::Legacy1.collection_filename(),
-        file_options_stored(),
-    )?;
-    io::copy(&mut tempfile, zip)?;
-
+fn write_dummy_collection(_zip: &mut ZipWriter<File>, _tr: &I18n) -> Result<()> {
+    // Doltlite port: the dummy is a stock-SQLite collection embedded in the
+    // .colpkg so older Anki versions can open it to show a "too new" warning.
+    // We can't build one anymore — `CollectionBuilder::build()` produces a
+    // prolly file with our linked engine, the `Basic` notetype lookup that
+    // `add_dummy_note` does no longer case-folds, and the B-tree pragmas
+    // (`page_size`, `journal_mode=delete`, `vacuum`) used to shape the dummy
+    // file all reject under prolly. Skip the probe; old-Anki interop is out
+    // of scope and our own restore path doesn't read the dummy.
     Ok(())
 }
 
+#[allow(dead_code)]
 fn create_dummy_collection_file(tr: &I18n) -> Result<NamedTempFile> {
     let tempfile = new_tempfile()?;
     let mut dummy_col = CollectionBuilder::new(tempfile.path()).build()?;
