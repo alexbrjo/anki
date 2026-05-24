@@ -1,16 +1,16 @@
-# Anki x Doltlite
+# Version Controlled Anki with Doltlite
 
-This is a frankenstein fork of Anki with SQLite ripped out and replaced with [Doltlite](https://www.dolthub.com/blog/2026-03-25-doltlite/). Doltlite is a SQLite fork that swaps the B-tree pager for a content-addressed prolly tree. Doltlite is essentially SQLite x git.
+This is a fork that adds version control to Anki. SQLite was ripped out and replaced with [Doltlite](https://www.dolthub.com/blog/2026-03-25-doltlite/). Doltlite is a SQLite fork that swaps the B-tree pager for a content-addressed prolly tree. Doltlite is essentially SQLite x git. This powers a basic version control and revert feature for notes.
 
 ## Why do this?
 
-It is a foundation for version controlled notes. Version controlled notes give you the ability to rollback cards to previous versions. Imagine you have an untrusted actor editing your Anki cards (like an AI Agent), you would want to have the ability to roll back the agent's edits. This is the basis to implement this.
+Version controlled notes give you the ability to rollback cards to previous versions. Imagine you have an untrusted actor editing your Anki cards (like an AI Agent), you would want to have the ability to roll back the agent's edits. This is the basis to implement this.
 
-I'm also interested in Dolt so this is just some hacking around to learn.
+![](docs/screenshot_revisions.png)
 
 ## Setup
 
-CAUTION: Running this will convert your local Anki decks to Doltlite. This is 100% experimental. It adds nothing to user experience and I don't recommend running it to use regularly. While the database in this branch natively supports versioning, there is no surface in the UX.
+CAUTION: Running this will convert your local Anki decks to Doltlite. This is highly experimental. It adds little to the user experience and I don't recommend running it to use regularly.
 
 ```bash
 # downloads a pre-built lib from DoltHub's GitHub releases (pinned 0.11.0)
@@ -21,6 +21,7 @@ cargo build --workspace
 
 ## UX changes to make this work
 
+- **Version control sidebar.** When you edit a card it creates a new version. You can click the version tab to see old versions and rollback.
 - **Migration on first open.** Every existing `collection.anki2` (and `collection.media.db2`) is rewritten in place from stock SQLite to the prolly format. !!!!!IF YOU RUN THIS LOCALLY, FIRST BACKUP YOUR ANKI!!!!!
 - **Case-insensitive name uniqueness is gone.** "Default" and "default" can coexist as separate decks, notetypes, tags, etc. Rust-side
   `UniCase` still folds case for in-memory lookups and tag-tree display, so most reads behave as before — but the DB no longer rejects duplicate-by-case inserts.
