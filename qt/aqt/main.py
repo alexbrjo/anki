@@ -181,6 +181,20 @@ class MainWebView(AnkiWebView):
         return False
 
 
+_SQLITE_MAGIC = b"SQLite format 3\x00"
+
+
+def _is_stock_sqlite_file(path: str) -> bool:
+    """True if the collection file at `path` is still in stock-SQLite format
+    and needs one-time migration to Doltlite. The check reads only the first
+    16 bytes, so it's cheap to do on every open."""
+    try:
+        with open(path, "rb") as f:
+            return f.read(16) == _SQLITE_MAGIC
+    except OSError:
+        return False
+
+
 class AnkiQt(QMainWindow):
     col: Collection
     pm: ProfileManagerType
@@ -687,7 +701,14 @@ class AnkiQt(QMainWindow):
 
     def _loadCollection(self) -> None:
         cpath = self.pm.collectionPath()
-        self.col = Collection(cpath, backend=self.backend)
+        needs_migration = _is_stock_sqlite_file(cpath)
+        if needs_migration:
+            self.progress.start(label=tr.qt_misc_converting_collection())
+        try:
+            self.col = Collection(cpath, backend=self.backend)
+        finally:
+            if needs_migration:
+                self.progress.finish()
         self.setEnabled(True)
 
     def reopen(self, after_full_sync: bool = False) -> None:

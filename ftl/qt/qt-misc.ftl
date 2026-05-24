@@ -75,6 +75,7 @@ qt-misc-layout-auto-enabled = Responsive layout enabled
 qt-misc-layout-vertical-enabled = Vertical layout enabled
 qt-misc-layout-horizontal-enabled = Horizontal layout enabled
 qt-misc-open-anki-launcher = Change to a different Anki version?
+qt-misc-converting-collection = Converting collection to the new format. This may take a few minutes…
 
 ## deprecated- these strings will be removed in the future, and do not need
 ## to be translated
