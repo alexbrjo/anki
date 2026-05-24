@@ -414,16 +414,19 @@ class Toolbar:
 </a>"""
 
     def set_sync_active(self, active: bool) -> None:
-        method = "add" if active else "remove"
-        self.web.eval(
-            f"document.getElementById('sync-spinner').classList.{method}('spin')"
-        )
+        # Doltlite port: the #sync-spinner element no longer exists in the
+        # rendered toolbar (we drop _create_sync_link()), so any DOM call
+        # against it throws a JS TypeError. Skip the call entirely.
+        del active
 
     def set_sync_status(self, status: SyncStatus) -> None:
-        self.web.eval(f"updateSyncColor({status.required})")
+        # See set_sync_active — updateSyncColor() targets a node that isn't
+        # in the DOM in this build.
+        del status
 
     def update_sync_status(self) -> None:
-        get_sync_status(self.mw, self.mw.toolbar.set_sync_status)
+        # Sync is disabled in this build; no status to poll.
+        pass
 
     # Link handling
     ######################################################################
