@@ -1,66 +1,68 @@
 #!/usr/bin/env bash
-# Fetch and build Doltlite, staging the artifacts under rslib/doltlite-sys/
-# so that:
-#   - libsqlite3-sys (via SQLITE3_LIB_DIR / SQLITE3_INCLUDE_DIR in
-#     .cargo/config.toml) links our libdoltlite.a as if it were libsqlite3.
-#   - rslib/build.rs picks up libdoltlite.a from `lib/` and emits the
-#     force-load linker flags that pull in the prolly engine.
+# Download a pre-built Doltlite library for the host platform and stage it
+# under rslib/doltlite-sys/ for libsqlite3-sys to find. DoltHub publishes
+# per-platform archives in their GitHub releases, so we don't need to clone
+# and build from source.
 #
-# Idempotent: re-run after pulling a new pin and it will re-clone + rebuild.
+# Idempotent: re-run any time to refresh, or after bumping DOLTLITE_VERSION.
 
 set -euo pipefail
 
-# Pin to a known-good Doltlite revision. Bump intentionally; do not float.
-# TODO: set this to the actual full SHA of the Doltlite commit whose
-# `libdoltlite.a` is currently in `rslib/doltlite-sys/lib/`. The previous
-# tracer mentioned `04d01572eb` (10-char prefix) as the basis; please verify
-# by running `git -C <doltlite-clone> log -1 --format=%H` on the same tree.
-DOLTLITE_SHA="${DOLTLITE_SHA:-}"
-DOLTLITE_REPO="https://github.com/dolthub/doltlite.git"
-
-if [[ -z "$DOLTLITE_SHA" ]]; then
-    echo "DOLTLITE_SHA is not set in $0 (and no override in env)." >&2
-    echo "Edit the script to pin the actual commit, or run:" >&2
-    echo "  DOLTLITE_SHA=<full-sha> $0" >&2
-    exit 1
-fi
+DOLTLITE_VERSION="${DOLTLITE_VERSION:-0.11.0}"
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 out_dir="$repo_root/rslib/doltlite-sys"
-work_dir="${TMPDIR:-/tmp}/doltlite-build"
 
+# Detect host platform → release asset name suffix.
+uname_s=$(uname -s)
+uname_m=$(uname -m)
+case "$uname_s/$uname_m" in
+    Darwin/arm64)   asset_arch="osx-arm64" ;;
+    Darwin/x86_64)
+        # DoltHub doesn't currently ship an osx-x64 prebuilt; macOS Intel
+        # users have to build from source or run under Rosetta.
+        echo "no prebuilt available for macOS x86_64 — bring your own libdoltlite.a" >&2
+        exit 2 ;;
+    Linux/x86_64)   asset_arch="linux-x64" ;;
+    Linux/aarch64)  asset_arch="linux-arm64" ;;
+    MINGW*|MSYS*|CYGWIN*)
+        asset_arch="win-x64" ;;
+    *)
+        echo "unsupported host platform $uname_s/$uname_m" >&2
+        exit 2 ;;
+esac
+
+asset="doltlite-lib-${asset_arch}-${DOLTLITE_VERSION}.zip"
+url="https://github.com/dolthub/doltlite/releases/download/v${DOLTLITE_VERSION}/${asset}"
+
+work_dir="${TMPDIR:-/tmp}/doltlite-fetch-${DOLTLITE_VERSION}-${asset_arch}"
+rm -rf "$work_dir"
+mkdir -p "$work_dir"
 mkdir -p "$out_dir/lib" "$out_dir/include"
 
-if [[ -d "$work_dir/.git" ]]; then
-    git -C "$work_dir" fetch --quiet origin
-    git -C "$work_dir" reset --hard --quiet "$DOLTLITE_SHA"
-else
-    rm -rf "$work_dir"
-    git clone --quiet "$DOLTLITE_REPO" "$work_dir"
-    git -C "$work_dir" reset --hard --quiet "$DOLTLITE_SHA"
-fi
+echo "fetching $asset"
+curl -fL --progress-bar -o "$work_dir/$asset" "$url"
+unzip -q "$work_dir/$asset" -d "$work_dir"
 
-cd "$work_dir"
+src_dir="$work_dir/doltlite-lib-${asset_arch}-${DOLTLITE_VERSION}"
 
-# `make doltlite-lib` is the real Doltlite build (prolly engine baked in).
-# `make sqlite3.c` produces a SQLite-compat amalgamation without prolly —
-# easy to grab by mistake, never what we want.
-make -j"$(getconf _NPROCESSORS_ONLN || echo 4)" doltlite-lib
-
-# The doltlite-lib target doesn't ship sqlite3ext.h on its own; build the
-# headers explicitly.
-make sqlite3.h sqlite3ext.h
-
-cp libdoltlite.a "$out_dir/lib/libdoltlite.a"
-cp sqlite3.h sqlite3ext.h "$out_dir/include/"
-
-# libsqlite3-sys links against `libsqlite3.a` by name; provide a symlink
-# rather than a copy so we don't ship 10 MB twice.
+cp "$src_dir/libdoltlite.a" "$out_dir/lib/libdoltlite.a"
+# libsqlite3-sys links against `libsqlite3.a` by name; symlink rather than
+# copy to keep the artifact size honest.
 ln -sf libdoltlite.a "$out_dir/lib/libsqlite3.a"
 
+# The archive ships `doltlite.h`, which is SQLite's standard sqlite3.h with
+# the file renamed. Copy it under both names so libsqlite3-sys's `#include
+# "sqlite3.h"` and any reference to "doltlite.h" both resolve.
+cp "$src_dir/doltlite.h" "$out_dir/include/sqlite3.h"
+cp "$src_dir/doltlite.h" "$out_dir/include/doltlite.h"
+[[ -f "$src_dir/doltlite_remotesrv.h" ]] && cp "$src_dir/doltlite_remotesrv.h" "$out_dir/include/"
+
+rm -rf "$work_dir"
+
 echo
-echo "Doltlite $DOLTLITE_SHA staged under rslib/doltlite-sys/"
+echo "Doltlite v${DOLTLITE_VERSION} (${asset_arch}) staged under rslib/doltlite-sys/"
 echo "  lib/libdoltlite.a  ($(wc -c < "$out_dir/lib/libdoltlite.a") bytes)"
 echo "  lib/libsqlite3.a   -> libdoltlite.a"
 echo "  include/sqlite3.h"
-echo "  include/sqlite3ext.h"
+echo "  include/doltlite.h"
