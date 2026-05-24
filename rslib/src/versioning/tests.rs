@@ -297,6 +297,75 @@ fn commit_without_snapshot_does_not_steal_unrelated_dirt() {
     );
 }
 
+/// TODO #1 — qt/aqt/addcards.py's on_success calls `commit_session`
+/// immediately after `add_note`, with no prior snapshot and no
+/// `mark_note_added` call. Strict mode treats that as a no-op, so the
+/// brand-new note ends up with **no history entry** — silent data loss
+/// in the version log. This test pins down the broken sequence.
+#[test]
+fn addcards_flow_without_mark_loses_new_note_history() {
+    let mut col = Collection::new();
+    // Bootstrap dolt_history_notes by committing an unrelated prior note.
+    let bootstrap = NoteAdder::basic(&mut col)
+        .fields(&["bootstrap", "back"])
+        .add(&mut col);
+    col.mark_note_added_for_session(&session("human").id, bootstrap.id)
+        .unwrap();
+    let handle = col.begin_versioning_session(session("human"));
+    col.commit_versioning_session(handle).unwrap();
+
+    let mut note = NoteAdder::basic(&mut col).fields(&["new", "back"]).note();
+    col.add_note(&mut note, crate::decks::DeckId(1)).unwrap();
+    // Pre-fix addcards.py sequence: commit_session immediately, with no
+    // mark_note_added and no snapshot.
+    let info = SessionInfo {
+        id: "addcards00000000000000000000beef".to_string(),
+        kind: SessionKind::Editor,
+        author: "human".to_string(),
+    };
+    let handle = col.begin_versioning_session(info);
+    assert!(
+        col.commit_versioning_session(handle).unwrap().is_none(),
+        "strict mode: commit without snapshot must be a no-op",
+    );
+    let versions = col.list_note_versions(note.id).unwrap();
+    assert!(
+        versions.is_empty(),
+        "without the fix, the new note has no history",
+    );
+}
+
+/// TODO #1 fix — addcards.py now calls the new `MarkNoteAdded` RPC
+/// (Collection::mark_note_added_for_session) between `add_note` and
+/// `commit_session`. The newly-added note ends up with exactly one
+/// history entry attributed to the addcards session.
+#[test]
+fn addcards_flow_with_mark_records_new_note_history() {
+    let mut col = Collection::new();
+    let mut note = NoteAdder::basic(&mut col).fields(&["new", "back"]).note();
+    col.add_note(&mut note, crate::decks::DeckId(1)).unwrap();
+    let sid = "addcards00000000000000000000beef".to_string();
+    // The fix.
+    col.mark_note_added_for_session(&sid, note.id).unwrap();
+    let info = SessionInfo {
+        id: sid,
+        kind: SessionKind::Editor,
+        author: "human".to_string(),
+    };
+    let handle = col.begin_versioning_session(info);
+    assert!(
+        col.commit_versioning_session(handle).unwrap().is_some(),
+        "marked add must produce a commit",
+    );
+    let versions = col.list_note_versions(note.id).unwrap();
+    assert_eq!(
+        versions.len(),
+        1,
+        "newly-added note must have exactly one history entry",
+    );
+    assert_eq!(versions[0].author, "human");
+}
+
 /// Issue 3 — `restore_note_version` calls `update_note` (which opens a
 /// transaction via `Collection::transact`) and then `commit_versioning_session`
 /// (which runs `dolt_commit`, an autocommit-only operation per

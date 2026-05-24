@@ -308,15 +308,20 @@ class AddCards(QMainWindow):
             self._load_new_note(sticky_fields_from=note)
             gui_hooks.add_cards_did_add_note(note)
             # Stamp the add as a Doltlite commit so the note has a
-            # version-history entry from the moment it's created. No prior
-            # snapshot exists, so the backend falls back to dolt_status —
-            # the just-added row makes the notes table dirty, so a commit
-            # fires.
+            # version-history entry from the moment it's created. We mark
+            # the note as added (snapshot prior=None) before committing,
+            # so strict-mode commit_session sees None -> Some(current)
+            # and fires.
             try:
                 from anki.versioning_pb2 import SessionKind
 
+                sid = secrets.token_hex(16)
+                self.mw.col._backend.mark_note_added(
+                    session_id=sid,
+                    nid=int(note.id),
+                )
                 self.mw.col._backend.commit_session(
-                    session_id=secrets.token_hex(16),
+                    session_id=sid,
                     kind=SessionKind.SESSION_KIND_EDITOR,
                     author="human",
                 )

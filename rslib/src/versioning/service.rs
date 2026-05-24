@@ -21,6 +21,14 @@ impl crate::services::VersioningService for Collection {
         Ok(pb::BeginSessionResponse {})
     }
 
+    fn mark_note_added(
+        &mut self,
+        input: pb::MarkNoteAddedRequest,
+    ) -> error::Result<pb::MarkNoteAddedResponse> {
+        self.mark_note_added_for_session(&input.session_id, NoteId(input.nid))?;
+        Ok(pb::MarkNoteAddedResponse {})
+    }
+
     fn commit_session(
         &mut self,
         input: pb::CommitSessionRequest,
