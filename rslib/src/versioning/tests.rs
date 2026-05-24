@@ -649,3 +649,103 @@ fn agent_session_without_actor_name_is_rejected() {
         "expected InvalidInput, got {err:?}",
     );
 }
+
+/// TODO #5 — `list_recent_versions` returns the collection-wide audit
+/// log newest-first, optionally filtered by author and/or session id.
+/// Covers the basics: ordering, author filter, session-id filter, and
+/// the limit clamp.
+#[test]
+fn list_recent_versions_filters_and_orders() {
+    let mut col = Collection::new();
+
+    // Three commits with distinct authors and sessions.
+    let mut a = NoteAdder::basic(&mut col).fields(&["a", "back"]).note();
+    col.add_note(&mut a, crate::decks::DeckId(1)).unwrap();
+    let s1 = "1111aaaa1111aaaa1111aaaa1111aaaa".to_string();
+    col.mark_note_added_for_session(&s1, a.id).unwrap();
+    let h = col.begin_versioning_session(SessionInfo {
+        id: s1.clone(),
+        kind: SessionKind::Editor,
+        actor_name: String::new(),
+    });
+    col.commit_versioning_session(h).unwrap().unwrap();
+
+    let mut b = NoteAdder::basic(&mut col).fields(&["b", "back"]).note();
+    col.add_note(&mut b, crate::decks::DeckId(1)).unwrap();
+    let s2 = "2222bbbb2222bbbb2222bbbb2222bbbb".to_string();
+    col.mark_note_added_for_session(&s2, b.id).unwrap();
+    let h = col.begin_versioning_session(SessionInfo {
+        id: s2.clone(),
+        kind: SessionKind::Agent,
+        actor_name: "claude".into(),
+    });
+    col.commit_versioning_session(h).unwrap().unwrap();
+
+    let s3 = "3333cccc3333cccc3333cccc3333cccc".to_string();
+    col.snapshot_note_for_session(&s3, a.id).unwrap();
+    a.fields_mut()[0] = "a2".to_string();
+    col.update_note(&mut a).unwrap();
+    let h = col.begin_versioning_session(SessionInfo {
+        id: s3.clone(),
+        kind: SessionKind::Agent,
+        actor_name: "claude".into(),
+    });
+    col.commit_versioning_session(h).unwrap().unwrap();
+
+    // No filter: all three (newest first).
+    let all = col.list_recent_versions(None, None, 0).unwrap();
+    assert!(
+        all.len() >= 3,
+        "expected at least 3 commits, got {}",
+        all.len()
+    );
+    let recent_authors: Vec<&str> = all.iter().take(3).map(|v| v.author.as_str()).collect();
+    assert_eq!(recent_authors, vec!["agent:claude", "agent:claude", "user"]);
+
+    // Filter by author.
+    let claude = col
+        .list_recent_versions(Some("agent:claude"), None, 0)
+        .unwrap();
+    assert_eq!(claude.len(), 2);
+    assert!(claude.iter().all(|v| v.author == "agent:claude"));
+
+    // Filter by session id picks out exactly one.
+    let just_s3 = col.list_recent_versions(None, Some(&s3), 0).unwrap();
+    assert_eq!(just_s3.len(), 1);
+    assert_eq!(just_s3[0].session_id, s3);
+
+    // Limit caps the result count.
+    let limited = col.list_recent_versions(None, None, 2).unwrap();
+    assert_eq!(limited.len(), 2);
+}
+
+/// TODO #6 — `diff_note_between_versions` returns both sides of a note
+/// at two of its commits, plus the names of fields that changed. Saves
+/// the caller from doing two `GetNoteAtVersion` calls and reimplementing
+/// the field-split logic.
+#[test]
+fn diff_note_between_versions_returns_both_sides_and_changed_fields() {
+    let mut col = Collection::new();
+    let mut note = NoteAdder::basic(&mut col).fields(&["v1", "back"]).note();
+    col.add_note(&mut note, crate::decks::DeckId(1)).unwrap();
+    col.mark_note_added_for_session(&session("human").id, note.id)
+        .unwrap();
+    let h = col.begin_versioning_session(session("human"));
+    let v1 = col.commit_versioning_session(h).unwrap().unwrap();
+
+    col.snapshot_note_for_session(&session("human").id, note.id)
+        .unwrap();
+    note.fields_mut()[0] = "v2".to_string();
+    col.update_note(&mut note).unwrap();
+    let h = col.begin_versioning_session(session("human"));
+    let v2 = col.commit_versioning_session(h).unwrap().unwrap();
+
+    let diff = col.diff_note_between_versions(note.id, &v1, &v2).unwrap();
+    assert_eq!(diff.from_fields, vec!["v1".to_string(), "back".to_string()]);
+    assert_eq!(diff.to_fields, vec!["v2".to_string(), "back".to_string()]);
+    assert_eq!(diff.changed_fields, vec!["Front".to_string()]);
+
+    // Same-side diff produces empty changed_fields.
+    let same = col.diff_note_between_versions(note.id, &v2, &v2).unwrap();
+    assert!(same.changed_fields.is_empty());
+}

@@ -42,6 +42,19 @@ service VersioningService {
   // version inline before the user decides to revert.
   rpc GetNoteAtVersion(GetNoteAtVersionRequest)
       returns (GetNoteAtVersionResponse);
+
+  // Two-sided diff for a single note between two of its commits.
+  // Equivalent to calling GetNoteAtVersion twice plus reimplementing
+  // the field-split / changed-fields logic client-side — but the
+  // backend already has all of that, so it does the work once.
+  rpc DiffNoteBetweenVersions(DiffNoteBetweenVersionsRequest)
+      returns (DiffNoteBetweenVersionsResponse);
+
+  // Audit-style listing of recent commits across the whole collection,
+  // optionally filtered by author and/or session id. Newest-first.
+  // Used to surface agent activity outside the per-note sidebar.
+  rpc ListRecentVersions(ListRecentVersionsRequest)
+      returns (ListRecentVersionsResponse);
 }
 
 service BackendVersioningService {}
@@ -129,6 +142,52 @@ message GetNoteAtVersionResponse {
   repeated string fields = 1;
   // Tag names (split on whitespace, same as Note.tags).
   repeated string tags = 2;
+}
+
+message DiffNoteBetweenVersionsRequest {
+  int64 nid = 1;
+  // Both must be commit hashes that touched this nid (i.e. present in
+  // the note's `ListNoteVersions` response).
+  string from_commit_hash = 2;
+  string to_commit_hash = 3;
+}
+
+message DiffNoteBetweenVersionsResponse {
+  // Field values at each side, same separator semantics as Note.fields.
+  repeated string from_fields = 1;
+  repeated string to_fields = 2;
+  // Tag names at each side (split on whitespace).
+  repeated string from_tags = 3;
+  repeated string to_tags = 4;
+  // Names of fields that differ between the two sides. Empty when the
+  // content is identical (rare but possible if one of the commits was a
+  // metadata-only edit). Resolved against the to-commit's notetype; if
+  // the notetype was changed between the two sides, names reflect the
+  // newer schema.
+  repeated string changed_fields = 5;
+}
+
+message ListRecentVersionsRequest {
+  // Exact match on dolt_log.committer (e.g. "user", "agent:claude").
+  // Empty matches all.
+  string author = 1;
+  // Exact match on the session id parsed from the commit message.
+  // Empty matches all.
+  string session_id = 2;
+  // Max rows. 0 → default 50; clamped to 1000.
+  uint32 limit = 3;
+}
+
+message ListRecentVersionsResponse {
+  repeated CollectionVersion versions = 1;
+}
+
+message CollectionVersion {
+  string commit_hash = 1;
+  int64 timestamp_secs = 2;
+  string author = 3;
+  string session_id = 4;
+  string session_kind = 5;
 }
 
 message RestoreNoteVersionResponse {

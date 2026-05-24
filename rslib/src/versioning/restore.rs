@@ -62,6 +62,59 @@ pub struct RestoreOutcome {
     pub changes: crate::ops::OpChanges,
 }
 
+/// Diff of a single note between two of its commits. Both sides are
+/// loaded via `load_historical_fields_and_tags`; `changed_fields`
+/// resolves names against the to-commit's notetype (read from the live
+/// `notes` row, since the notetype itself may have moved between the
+/// two sides).
+pub struct NoteDiff {
+    pub from_fields: Vec<String>,
+    pub to_fields: Vec<String>,
+    pub from_tags: Vec<String>,
+    pub to_tags: Vec<String>,
+    pub changed_fields: Vec<String>,
+}
+
+impl Collection {
+    pub fn diff_note_between_versions(
+        &mut self,
+        nid: NoteId,
+        from_commit_hash: &str,
+        to_commit_hash: &str,
+    ) -> Result<NoteDiff> {
+        let (from_flds, from_tags) = load_historical_fields_and_tags(self, nid, from_commit_hash)?;
+        let (to_flds, to_tags) = load_historical_fields_and_tags(self, nid, to_commit_hash)?;
+
+        // Resolve field names against the live note's current notetype.
+        // load_note_versions makes the same call; the alternative (peek
+        // at the historical row's mid) means an extra query per side
+        // and can still mismatch if the older row carried a different
+        // schema. Defer to "what the user sees now" — matches the
+        // sidebar.
+        let field_names = self.field_names_at_nid(nid)?;
+        let changed =
+            super::history::diff_field_names(&from_flds, &to_flds, field_names.as_deref());
+
+        Ok(NoteDiff {
+            from_fields: from_flds.split('\x1f').map(Into::into).collect(),
+            to_fields: to_flds.split('\x1f').map(Into::into).collect(),
+            from_tags: split_tags(&from_tags).map(Into::into).collect(),
+            to_tags: split_tags(&to_tags).map(Into::into).collect(),
+            changed_fields: changed,
+        })
+    }
+
+    fn field_names_at_nid(&mut self, nid: NoteId) -> Result<Option<Vec<String>>> {
+        let Some(note) = self.storage.get_note(nid)? else {
+            return Ok(None);
+        };
+        let Some(nt) = self.get_notetype(note.notetype_id)? else {
+            return Ok(None);
+        };
+        Ok(Some(nt.fields.iter().map(|f| f.name.clone()).collect()))
+    }
+}
+
 pub(super) fn load_historical_fields_and_tags(
     col: &Collection,
     nid: NoteId,
