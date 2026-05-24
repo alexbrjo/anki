@@ -58,7 +58,8 @@ impl Collection {
 mod test {
     use super::*;
 
-    #[ignore = "doltlite: depends on dropped COLLATE unicase / stock-SQLite sync"]    #[test]
+    #[ignore = "doltlite: depends on dropped COLLATE unicase / stock-SQLite sync"]
+    #[test]
     fn adding_and_removing_fields_and_templates() -> Result<()> {
         let mut col = Collection::new();
         let nt = col.get_notetype_by_name("Basic")?.unwrap();

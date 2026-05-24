@@ -31,7 +31,8 @@ fn collection_with_media(dir: &Path, name: &str) -> Result<Collection> {
     Ok(col)
 }
 
-#[ignore = "doltlite: depends on dropped COLLATE unicase / stock-SQLite sync"]#[test]
+#[ignore = "doltlite: depends on dropped COLLATE unicase / stock-SQLite sync"]
+#[test]
 fn roundtrip() -> Result<()> {
     let _dir = tempdir()?;
     let dir = _dir.path();

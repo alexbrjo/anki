@@ -305,13 +305,17 @@ fn trace(event: rusqlite::trace::TraceEvent) {
 }
 
 fn is_prolly_engine(db: &Connection) -> bool {
-    db.query_row("SELECT doltlite_engine()", [], |row| row.get::<_, String>(0))
-        .map(|s| s == "prolly")
-        .unwrap_or(false)
+    db.query_row("SELECT doltlite_engine()", [], |row| {
+        row.get::<_, String>(0)
+    })
+    .map(|s| s == "prolly")
+    .unwrap_or(false)
 }
 
 pub(crate) fn open_or_create<P: AsRef<Path>>(path: P) -> error::Result<Connection> {
-    use crate::storage::migrate_from_sqlite::{detect_format, migrate_in_place, Format};
+    use crate::storage::migrate_from_sqlite::detect_format;
+    use crate::storage::migrate_from_sqlite::migrate_in_place;
+    use crate::storage::migrate_from_sqlite::Format;
     crate::storage::sqlite::install_doltlite_auto_extension();
     let path = path.as_ref();
     if matches!(detect_format(path)?, Format::Sqlite) {

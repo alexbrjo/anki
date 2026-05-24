@@ -69,9 +69,11 @@ pub(crate) fn install_doltlite_auto_extension() {
 /// we can skip them; stock-SQLite (B-tree) files still take the legacy path
 /// during one-time migration in `migrate_from_sqlite`.
 pub(crate) fn is_prolly_engine(db: &Connection) -> bool {
-    db.query_row("SELECT doltlite_engine()", [], |row| row.get::<_, String>(0))
-        .map(|s| s == "prolly")
-        .unwrap_or(false)
+    db.query_row("SELECT doltlite_engine()", [], |row| {
+        row.get::<_, String>(0)
+    })
+    .map(|s| s == "prolly")
+    .unwrap_or(false)
 }
 
 fn open_or_create_collection_db(path: &Path) -> Result<Connection> {
@@ -507,7 +509,9 @@ impl SqliteStorage {
         server: bool,
         check_integrity: bool,
     ) -> Result<Self> {
-        use super::migrate_from_sqlite::{detect_format, migrate_in_place, Format};
+        use super::migrate_from_sqlite::detect_format;
+        use super::migrate_from_sqlite::migrate_in_place;
+        use super::migrate_from_sqlite::Format;
         if matches!(detect_format(path)?, Format::Sqlite) {
             migrate_in_place(path)?;
         }

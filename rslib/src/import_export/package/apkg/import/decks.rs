@@ -201,7 +201,8 @@ mod test {
 
     use super::*;
 
-    #[ignore = "doltlite: depends on dropped COLLATE unicase / stock-SQLite sync"]    #[test]
+    #[ignore = "doltlite: depends on dropped COLLATE unicase / stock-SQLite sync"]
+    #[test]
     fn parents() {
         let mut col = Collection::new();
 

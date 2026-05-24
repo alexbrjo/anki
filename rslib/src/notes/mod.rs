@@ -706,7 +706,8 @@ mod test {
         assert_eq!(field_checksum("今日"), 1464653051);
     }
 
-    #[ignore = "doltlite: depends on dropped COLLATE unicase / stock-SQLite sync"]    #[test]
+    #[ignore = "doltlite: depends on dropped COLLATE unicase / stock-SQLite sync"]
+    #[test]
     fn adding_cards() -> Result<()> {
         let mut col = Collection::new();
         let nt = col
@@ -786,7 +787,8 @@ mod test {
         Ok(())
     }
 
-    #[ignore = "doltlite: depends on dropped COLLATE unicase / stock-SQLite sync"]    #[test]
+    #[ignore = "doltlite: depends on dropped COLLATE unicase / stock-SQLite sync"]
+    #[test]
     fn undo() -> Result<()> {
         let mut col = Collection::new();
         let nt = col

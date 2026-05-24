@@ -4,8 +4,5 @@
 include!("../../build/doltlite_force_load.rs");
 
 fn main() {
-    force_load_libdoltlite(
-        env!("CARGO_MANIFEST_DIR"),
-        &["..", "doltlite-sys", "lib"],
-    );
+    force_load_libdoltlite(env!("CARGO_MANIFEST_DIR"), &["..", "doltlite-sys", "lib"]);
 }

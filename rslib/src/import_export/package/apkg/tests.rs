@@ -25,7 +25,8 @@ const MP3_DATA: &[u8] = b"2";
 const JS_DATA: &[u8] = b"3";
 const EXISTING_MP3_DATA: &[u8] = b"4";
 
-#[ignore = "doltlite: depends on dropped COLLATE unicase / stock-SQLite sync"]#[test]
+#[ignore = "doltlite: depends on dropped COLLATE unicase / stock-SQLite sync"]
+#[test]
 fn roundtrip() {
     roundtrip_inner(true);
     roundtrip_inner(false);

@@ -197,7 +197,8 @@ mod test {
     use super::*;
     use crate::decks::DeckId;
 
-    #[ignore = "doltlite: depends on dropped COLLATE unicase / stock-SQLite sync"]    #[test]
+    #[ignore = "doltlite: depends on dropped COLLATE unicase / stock-SQLite sync"]
+    #[test]
     fn tags() -> Result<()> {
         let mut col = Collection::new();
         let nt = col.get_notetype_by_name("Basic")?.unwrap();

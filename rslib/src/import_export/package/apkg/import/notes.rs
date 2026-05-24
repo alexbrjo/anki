@@ -764,7 +764,8 @@ mod test {
         assert_eq!(col.get_all_notes()[0].fields()[0], "");
     }
 
-    #[ignore = "doltlite: depends on dropped COLLATE unicase / stock-SQLite sync"]    #[test]
+    #[ignore = "doltlite: depends on dropped COLLATE unicase / stock-SQLite sync"]
+    #[test]
     fn should_add_note_with_remapped_notetype_if_in_notetype_map() {
         let mut col = Collection::new();
         let basic_ntid = col.get_notetype_by_name("basic").unwrap().unwrap().id;
@@ -779,7 +780,8 @@ mod test {
         assert_eq!(col.get_all_notes()[0].notetype_id, basic_ntid);
     }
 
-    #[ignore = "doltlite: depends on dropped COLLATE unicase / stock-SQLite sync"]    #[test]
+    #[ignore = "doltlite: depends on dropped COLLATE unicase / stock-SQLite sync"]
+    #[test]
     fn should_ignore_note_if_guid_already_exists_and_notetype_is_remapped() {
         let mut col = Collection::new();
         let basic_ntid = col.get_notetype_by_name("basic").unwrap().unwrap().id;
@@ -819,7 +821,8 @@ mod test {
         assert!(col.storage.get_notetype(NotetypeId(123)).unwrap().is_some());
     }
 
-    #[ignore = "doltlite: depends on dropped COLLATE unicase / stock-SQLite sync"]    #[test]
+    #[ignore = "doltlite: depends on dropped COLLATE unicase / stock-SQLite sync"]
+    #[test]
     fn should_update_existing_notetype_with_older_mtime_and_matching_schema() {
         let mut col = Collection::new();
         let mut basic = col.basic_notetype();
@@ -839,7 +842,8 @@ mod test {
         assert!(col.get_notetype_by_name("new").unwrap().is_none());
     }
 
-    #[ignore = "doltlite: depends on dropped COLLATE unicase / stock-SQLite sync"]    #[test]
+    #[ignore = "doltlite: depends on dropped COLLATE unicase / stock-SQLite sync"]
+    #[test]
     fn should_rename_field_with_matching_id_without_schema_change() {
         let mut col = Collection::new();
         let mut to_import = col.basic_notetype();
@@ -849,7 +853,8 @@ mod test {
         assert_eq!(col.basic_notetype().fields[0].name, "renamed");
     }
 
-    #[ignore = "doltlite: depends on dropped COLLATE unicase / stock-SQLite sync"]    #[test]
+    #[ignore = "doltlite: depends on dropped COLLATE unicase / stock-SQLite sync"]
+    #[test]
     fn should_add_remapped_notetype_if_schema_has_changed_and_reuse_it_subsequently() {
         let mut col = Collection::new();
         let mut to_import = col.basic_notetype();
@@ -876,7 +881,8 @@ mod test {
         assert_eq!(updated.name, "new name");
     }
 
-    #[ignore = "doltlite: depends on dropped COLLATE unicase / stock-SQLite sync"]    #[test]
+    #[ignore = "doltlite: depends on dropped COLLATE unicase / stock-SQLite sync"]
+    #[test]
     fn should_merge_notetype_fields() {
         let mut col = Collection::new();
         let mut to_import = col.basic_notetype();
@@ -904,7 +910,8 @@ mod test {
         );
     }
 
-    #[ignore = "doltlite: depends on dropped COLLATE unicase / stock-SQLite sync"]    #[test]
+    #[ignore = "doltlite: depends on dropped COLLATE unicase / stock-SQLite sync"]
+    #[test]
     fn should_merge_notetype_templates() {
         let mut col = Collection::new();
         let mut to_import = col.basic_rev_notetype();
@@ -932,7 +939,8 @@ mod test {
         assert_eq!(map.get(&1), Some(&2));
     }
 
-    #[ignore = "doltlite: depends on dropped COLLATE unicase / stock-SQLite sync"]    #[test]
+    #[ignore = "doltlite: depends on dropped COLLATE unicase / stock-SQLite sync"]
+    #[test]
     fn should_merge_notetype_duplicates_from_previous_imports() {
         let mut col = Collection::new();
         let mut incoming = col.basic_notetype();
@@ -971,7 +979,8 @@ mod test {
             .eq(["front", "back", "new", ""]))
     }
 
-    #[ignore = "doltlite: depends on dropped COLLATE unicase / stock-SQLite sync"]    #[test]
+    #[ignore = "doltlite: depends on dropped COLLATE unicase / stock-SQLite sync"]
+    #[test]
     fn reimport_with_merge_enabled_should_handle_duplicates() -> Result<()> {
         // import from src to dst
         let mut src = Collection::new();
@@ -1030,7 +1039,8 @@ mod test {
         Ok(())
     }
 
-    #[ignore = "doltlite: depends on dropped COLLATE unicase / stock-SQLite sync"]    #[test]
+    #[ignore = "doltlite: depends on dropped COLLATE unicase / stock-SQLite sync"]
+    #[test]
     fn should_merge_conflicting_notetype_even_without_original_id() {
         let mut col = Collection::new();
         // incoming notetype with a new field

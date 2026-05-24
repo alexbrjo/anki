@@ -379,7 +379,8 @@ mod test {
     use super::*;
     use crate::error::Result;
 
-    #[ignore = "doltlite: depends on dropped COLLATE unicase / stock-SQLite sync"]    #[test]
+    #[ignore = "doltlite: depends on dropped COLLATE unicase / stock-SQLite sync"]
+    #[test]
     fn field_map() -> Result<()> {
         let mut col = Collection::new();
         let mut basic = col
