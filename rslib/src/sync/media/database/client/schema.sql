@@ -1,8 +1,8 @@
 CREATE TABLE media (
   fname text NOT NULL PRIMARY KEY,
-  -- null indicates deleted file
+  /* null indicates deleted file */
   csum text,
-  -- zero if deleted
+  /* zero if deleted */
   mtime int NOT NULL,
   dirty int NOT NULL
 ) without rowid;

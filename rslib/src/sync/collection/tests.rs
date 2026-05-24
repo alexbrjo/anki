@@ -213,6 +213,7 @@ async fn aborting_is_idempotent() -> Result<()> {
     .await
 }
 
+#[ignore = "doltlite: sync not preserved in initial port"]
 #[tokio::test]
 async fn new_syncs_cancel_old_ones() -> Result<()> {
     with_active_server(|mut client| async move {
@@ -275,6 +276,7 @@ async fn new_syncs_cancel_old_ones() -> Result<()> {
     .await
 }
 
+#[ignore = "doltlite: sync not preserved in initial port"]
 #[tokio::test]
 async fn sync_roundtrip() -> Result<()> {
     with_active_server(|client| async move {

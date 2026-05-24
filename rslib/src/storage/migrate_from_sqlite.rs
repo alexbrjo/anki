@@ -244,4 +244,22 @@ mod test {
         let _ = fs::remove_file(&p);
         assert_eq!(detect_format(&p).unwrap(), Format::Empty);
     }
+
+    #[test]
+    fn fresh_connection_uses_prolly_engine() {
+        crate::storage::sqlite::install_doltlite_auto_extension();
+        let p = std::env::temp_dir().join("anki-engine-smoke.db");
+        let _ = fs::remove_file(&p);
+        let db = rusqlite::Connection::open(&p).unwrap();
+        let engine: String = db
+            .query_row("SELECT doltlite_engine()", [], |r| r.get(0))
+            .expect("doltlite_engine() should resolve when the prolly engine is linked");
+        assert_eq!(engine, "prolly");
+        let head = fs::read(&p).unwrap_or_default();
+        assert!(
+            head.starts_with(PROLLY_MAGIC),
+            "fresh file should start with CTLD, got {:02x?}",
+            &head[..head.len().min(16)]
+        );
+    }
 }

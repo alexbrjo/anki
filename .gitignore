@@ -2,6 +2,8 @@ __pycache__
 .mypy_cache
 .DS_Store
 /rslib/doltlite-sys/vendor/
+/rslib/doltlite-sys/lib/
+/rslib/doltlite-sys/include/
 anki.prof
 target
 /user.bazelrc

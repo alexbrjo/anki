@@ -312,6 +312,7 @@ fn is_prolly_engine(db: &Connection) -> bool {
 
 pub(crate) fn open_or_create<P: AsRef<Path>>(path: P) -> error::Result<Connection> {
     use crate::storage::migrate_from_sqlite::{detect_format, migrate_in_place, Format};
+    crate::storage::sqlite::install_doltlite_auto_extension();
     let path = path.as_ref();
     if matches!(detect_format(path)?, Format::Sqlite) {
         migrate_in_place(path)?;

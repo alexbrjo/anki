@@ -44,6 +44,26 @@ pub struct SqliteStorage {
     pub(crate) db: Connection,
 }
 
+/// Doltlite's prolly engine ships in `libdoltlite.a` as a separate set of
+/// object files that register themselves via `sqlite3_auto_extension`. Without
+/// an explicit reference, the static linker happily dead-code-eliminates the
+/// registration symbol and we end up with a stock-SQLite build. Calling this
+/// once at process start (idempotent inside Doltlite) ensures the prolly
+/// engine, `dolt_*` functions, and `doltlite_engine()` are wired into every
+/// subsequent `sqlite3_open`.
+pub(crate) fn install_doltlite_auto_extension() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        extern "C" {
+            fn doltliteInstallAutoExt();
+        }
+        // SAFETY: zero-arg C function with no side effects beyond registering
+        // its own SQLite auto-extension hook. Safe to call once.
+        unsafe { doltliteInstallAutoExt() };
+    });
+}
+
 /// Doltlite's prolly engine has its own chunk-store durability/paging model and
 /// rejects B-tree-era configuration pragmas. We detect prolly at open time so
 /// we can skip them; stock-SQLite (B-tree) files still take the legacy path
@@ -55,6 +75,7 @@ pub(crate) fn is_prolly_engine(db: &Connection) -> bool {
 }
 
 fn open_or_create_collection_db(path: &Path) -> Result<Connection> {
+    install_doltlite_auto_extension();
     let db = Connection::open(path)?;
 
     if std::env::var("TRACESQL").is_ok() {

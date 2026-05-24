@@ -12,7 +12,7 @@ pub(crate) mod migrate_from_sqlite;
 mod note;
 mod notetype;
 mod revlog;
-mod sqlite;
+pub(crate) mod sqlite;
 mod sync;
 mod sync_check;
 mod tag;
