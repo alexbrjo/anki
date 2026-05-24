@@ -374,7 +374,10 @@ class Toolbar:
             ),
         ]
 
-        links.append(self._create_sync_link())
+        # Doltlite port: sync is incompatible with the prolly-format file
+        # — the protocol expects stock SQLite collection bytes. Skip the
+        # toolbar entry rather than ship a button that corrupts user data.
+        # links.append(self._create_sync_link())
 
         gui_hooks.top_toolbar_did_init_links(links, self)
 

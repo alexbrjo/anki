@@ -1113,17 +1113,14 @@ title="{}" {}>{}</button>""".format(
     ##########################################################################
 
     def on_sync_button_clicked(self) -> None:
-        if self.media_syncer.is_syncing():
-            self.media_syncer.show_sync_log()
-        else:
-            auth = self.pm.sync_auth()
-            if not auth:
-                sync_login(
-                    self,
-                    lambda: self._sync_collection_and_media(self._refresh_after_sync),
-                )
-            else:
-                self._sync_collection_and_media(self._refresh_after_sync)
+        # Doltlite port: sync is disabled. The AnkiWeb protocol expects
+        # stock-SQLite collection bytes and would either fail or, worse,
+        # silently corrupt the prolly-format file. Surface that to anyone
+        # who hits the "y" shortcut or a left-over toolbar entry.
+        showWarning(
+            "Sync is disabled in this build (Doltlite port). Your collection "
+            "is in the prolly format and is not compatible with AnkiWeb."
+        )
 
     def _refresh_after_sync(self) -> None:
         self.toolbar.redraw()
@@ -1151,7 +1148,8 @@ title="{}" {}>{}</button>""".format(
 
     def can_auto_sync(self) -> bool:
         "True if syncing on startup/shutdown enabled."
-        return self._can_sync_unattended() and self.pm.auto_syncing_enabled()
+        # Doltlite port: never auto-sync. See on_sync_button_clicked.
+        return False
 
     def _can_sync_unattended(self) -> bool:
         return (
