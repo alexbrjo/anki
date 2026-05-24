@@ -89,6 +89,34 @@ pub fn migrate(src: &Path, dst: &Path) -> Result<Stats> {
     Ok(stats)
 }
 
+/// Build an `ORDER BY` clause that gives Doltlite-prolly's planner a
+/// concrete walk order for `SELECT * FROM "<table>"`. Uses the table's
+/// declared PRIMARY KEY columns (sorted by pk-position) if any; falls
+/// back to `ORDER BY rowid` for legacy ROWID tables with no declared PK.
+fn order_by_clause(conn: &rusqlite::Connection, table: &str) -> Result<String> {
+    // PRAGMA table_info returns rows of (cid, name, type, notnull, dflt, pk).
+    // pk = 0 means "not part of a primary key"; for composite PKs the
+    // pk column holds the 1-based position within the key.
+    let pragma = format!(r#"PRAGMA table_info("{}")"#, table.replace('"', "\"\""));
+    let mut stmt = conn.prepare(&pragma)?;
+    let mut pk_cols: Vec<(i32, String)> = stmt
+        .query_map([], |r| Ok((r.get::<_, i32>(5)?, r.get::<_, String>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|(pk, _)| *pk > 0)
+        .collect();
+    if pk_cols.is_empty() {
+        // No declared PK → ROWID table; rowid is always plannable.
+        return Ok(" ORDER BY rowid".into());
+    }
+    pk_cols.sort_by_key(|(pk, _)| *pk);
+    let cols: Vec<String> = pk_cols
+        .into_iter()
+        .map(|(_, name)| format!(r#""{}""#, name.replace('"', "\"\"")))
+        .collect();
+    Ok(format!(" ORDER BY {}", cols.join(",")))
+}
+
 /// Rewrite the source's `sqlite_master.sql` rows in place to strip
 /// `COLLATE unicase` and SQL line comments, so subsequent SELECTs can
 /// be prepared by Doltlite-prolly (which doesn't permit registering
@@ -304,7 +332,17 @@ fn copy_table(
     dst: &doltlite::Connection,
     table: &str,
 ) -> Result<usize> {
-    let select_sql = format!(r#"SELECT * FROM "{}""#, table.replace('"', "\"\""));
+    // Doltlite-prolly's planner returns "no query solution" for bare
+    // `SELECT * FROM t` against WITHOUT ROWID tables (Anki's `fields`,
+    // `templates`, `tags`, `config`). Always ORDER BY the PK so the
+    // planner has a key it can walk; works equally well for plain
+    // ROWID tables with a declared PK.
+    let order = order_by_clause(src, table)?;
+    let select_sql = format!(
+        r#"SELECT * FROM "{}"{}"#,
+        table.replace('"', "\"\""),
+        order
+    );
     let mut select = src.prepare(&select_sql)?;
     let col_count = select.column_count();
     let col_names: Vec<String> = (0..col_count)
