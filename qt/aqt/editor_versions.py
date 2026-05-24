@@ -14,6 +14,7 @@ in-between versions remain in history).
 from __future__ import annotations
 
 import secrets
+import traceback
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Callable
 
@@ -231,8 +232,8 @@ class VersionsSidebar(QFrame):
             return
         try:
             reviewer.refresh_if_needed()
-        except Exception as e:
-            print(f"versioning: reviewer refresh failed: {e}")
+        except Exception:
+            traceback.print_exc()
 
 
 def _format_timestamp(secs: int) -> str:

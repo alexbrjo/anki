@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import secrets
+import traceback
 from collections.abc import Callable
 
 import aqt.editor
@@ -325,8 +326,16 @@ class AddCards(QMainWindow):
                     kind=SessionKind.SESSION_KIND_EDITOR,
                     actor_name="",
                 )
-            except Exception as e:
-                print(f"versioning: add-time commit_session failed: {e}")
+            except Exception:
+                # The note was added successfully; only the version-history
+                # stamp failed. Surface it so the user knows the new note
+                # isn't in the version log.
+                traceback.print_exc()
+                tooltip(
+                    "Card added, but version history was not updated"
+                    " (see console).",
+                    period=4000,
+                )
 
         add_note(parent=self, note=note, target_deck_id=target_deck_id).success(
             on_success

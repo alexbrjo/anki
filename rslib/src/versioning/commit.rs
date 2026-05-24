@@ -119,6 +119,17 @@ impl Collection {
         if !any_changed {
             return Ok(None);
         }
+        // `dolt_commit` (and `dolt_add`) are autocommit-only — calling them
+        // inside an open SQL transaction implicitly closes that transaction
+        // and silently loses any pending writes. The module docs spell this
+        // out; the assert is here so a future refactor that wraps versioning
+        // in `Collection::transact` blows up loudly in debug builds instead
+        // of quietly corrupting state in release.
+        debug_assert!(
+            self.storage.db.is_autocommit(),
+            "commit_versioning_session called inside a SQL transaction; \
+             dolt_commit would implicitly close it and lose pending writes",
+        );
         stage_all(self)?;
         let hash = make_commit(self, &handle.info)?;
         Ok(Some(hash))

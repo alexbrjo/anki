@@ -12,6 +12,7 @@ import mimetypes
 import os
 import re
 import secrets
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -269,8 +270,8 @@ class Editor:
         self._versioning_preview_active = False
         try:
             self.note.load()
-        except Exception as e:
-            print(f"versioning: note.load() failed exiting preview: {e}")
+        except Exception:
+            traceback.print_exc()
             return
         self.loadNoteKeepingFocus()
 
@@ -284,8 +285,8 @@ class Editor:
         self._versioning_preview_active = False
         try:
             self.note.load()
-        except Exception as e:
-            print(f"versioning: note.load() failed after restore: {e}")
+        except Exception:
+            traceback.print_exc()
             return
         self.loadNoteKeepingFocus()
         # The session snapshot was taken before the restore — re-snapshot
@@ -725,8 +726,16 @@ require("anki/ui").loaded.then(() => require("anki/NoteEditor").instances[0].too
                 nid=int(self.note.id),
             )
             self._versioning_active = True
-        except Exception as e:
-            print(f"versioning: begin_session failed: {e}")
+        except Exception:
+            # No snapshot recorded → the editor's eventual commit_session is
+            # a no-op. The user's edit still saves to the note, but it won't
+            # be stamped into version history. Surface that so a broken
+            # versioning setup doesn't masquerade as "everything fine".
+            traceback.print_exc()
+            tooltip(
+                "Version history not started for this edit (see console).",
+                period=4000,
+            )
             self._versioning_active = False
 
     def _commit_versioning_session(self) -> None:
@@ -741,10 +750,15 @@ require("anki/ui").loaded.then(() => require("anki/NoteEditor").instances[0].too
                 kind=SessionKind.SESSION_KIND_EDITOR,
                 actor_name="",
             )
-        except Exception as e:
-            # Versioning is best-effort in P0 — never fail the editor close
-            # because the version log couldn't be stamped.
-            print(f"versioning: commit_session failed: {e}")
+        except Exception:
+            # Versioning is best-effort: never fail the editor close because
+            # the version log couldn't be stamped. But surface the failure
+            # so silent "edit saved, history skipped" doesn't go unnoticed.
+            traceback.print_exc()
+            tooltip(
+                "Edit saved, but version history was not updated (see console).",
+                period=4000,
+            )
         self._versioning_active = False
 
     def loadNoteKeepingFocus(self) -> None:
