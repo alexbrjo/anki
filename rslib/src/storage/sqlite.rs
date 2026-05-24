@@ -486,6 +486,10 @@ impl SqliteStorage {
         server: bool,
         check_integrity: bool,
     ) -> Result<Self> {
+        use super::migrate_from_sqlite::{detect_format, migrate_in_place, Format};
+        if matches!(detect_format(path)?, Format::Sqlite) {
+            migrate_in_place(path)?;
+        }
         let db = open_or_create_collection_db(path)?;
         let (create, ver) = schema_version(&db)?;
 
