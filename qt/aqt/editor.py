@@ -193,7 +193,6 @@ class Editor:
         # non_null) calls from operation_did_execute don't double-commit.
         self._versioning_session_id: str = ""
         self._versioning_active: bool = False
-        self._versioning_author: str = "human"
         # When True, the editor is showing the content of a prior commit as
         # a preview. Saves are suppressed so the live row isn't overwritten
         # by accidental edits in the webview during preview.
@@ -740,7 +739,7 @@ require("anki/ui").loaded.then(() => require("anki/NoteEditor").instances[0].too
             self.mw.col._backend.commit_session(
                 session_id=self._versioning_session_id,
                 kind=SessionKind.SESSION_KIND_EDITOR,
-                author=self._versioning_author,
+                actor_name="",
             )
         except Exception as e:
             # Versioning is best-effort in P0 — never fail the editor close

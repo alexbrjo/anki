@@ -323,7 +323,7 @@ class AddCards(QMainWindow):
                 self.mw.col._backend.commit_session(
                     session_id=sid,
                     kind=SessionKind.SESSION_KIND_EDITOR,
-                    author="human",
+                    actor_name="",
                 )
             except Exception as e:
                 print(f"versioning: add-time commit_session failed: {e}")

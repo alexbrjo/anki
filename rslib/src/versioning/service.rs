@@ -41,7 +41,7 @@ impl crate::services::VersioningService for Collection {
         let info = SessionInfo {
             id: input.session_id,
             kind,
-            author: input.author,
+            actor_name: input.actor_name,
         };
         let handle = self.begin_versioning_session(info);
         let hash = self.commit_versioning_session(handle)?.unwrap_or_default();
@@ -81,7 +81,7 @@ impl crate::services::VersioningService for Collection {
         let session = SessionInfo {
             id: input.session_id,
             kind,
-            author: input.author,
+            actor_name: input.actor_name,
         };
         let outcome = self.restore_note_version(NoteId(input.nid), &input.commit_hash, session)?;
         Ok(pb::RestoreNoteVersionResponse {

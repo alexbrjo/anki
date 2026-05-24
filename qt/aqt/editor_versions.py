@@ -198,7 +198,7 @@ class VersionsSidebar(QFrame):
                 commit_hash=commit_hash,
                 session_id=secrets.token_hex(16),
                 kind=SessionKind.SESSION_KIND_EDITOR,
-                author="human",
+                actor_name="",
             )
 
         CollectionOp(self, do_restore).success(

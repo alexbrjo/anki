@@ -24,11 +24,25 @@ fn newest_commit(col: &Collection) -> (String, String, String) {
         .unwrap()
 }
 
+/// Test helper: parse a colloquial author string ("human" / "agent:foo"
+/// / "app:foo") into a SessionInfo whose `kind` and `actor_name` produce
+/// that author when SessionInfo::author() is called.
 fn session(author: &str) -> SessionInfo {
+    let (kind, actor_name) = if author == "human" || author == "user" {
+        (SessionKind::Editor, String::new())
+    } else if let Some(name) = author.strip_prefix("agent:") {
+        (SessionKind::Agent, name.to_string())
+    } else if let Some(name) = author.strip_prefix("app:") {
+        (SessionKind::App, name.to_string())
+    } else {
+        // Bare names default to Agent so older test strings ("addcards",
+        // "editor-b") still produce a distinguishable committer.
+        (SessionKind::Agent, author.to_string())
+    };
     SessionInfo {
         id: "deadbeefdeadbeefdeadbeefdeadbeef".to_string(),
-        kind: SessionKind::Editor,
-        author: author.to_string(),
+        kind,
+        actor_name,
     }
 }
 
@@ -49,13 +63,13 @@ fn commit_records_edits() {
 
     let (commit_hash, committer, message) = newest_commit(&col);
     assert_eq!(commit_hash, hash.unwrap());
-    assert_eq!(committer, "human");
+    assert_eq!(committer, "user");
     assert!(
         message.contains("\"session\":\"deadbeef"),
         "commit message should carry session metadata: {message}"
     );
     assert!(message.contains("\"kind\":\"editor\""));
-    assert!(message.contains("\"actor\":\"human\""));
+    assert!(message.contains("\"actor\":\"user\""));
 }
 
 #[test]
@@ -84,7 +98,7 @@ fn snapshot_skips_commit_when_content_unchanged() {
         let info = SessionInfo {
             id: sid,
             kind: SessionKind::Editor,
-            author: "human".to_string(),
+            actor_name: String::new(),
         };
         let h = col.begin_versioning_session(info);
         let hash = col.commit_versioning_session(h).unwrap();
@@ -115,7 +129,7 @@ fn snapshot_commits_when_content_changes() {
     let info = SessionInfo {
         id: sid,
         kind: SessionKind::Editor,
-        author: "human".to_string(),
+        actor_name: String::new(),
     };
     let h = col.begin_versioning_session(info);
     let hash = col.commit_versioning_session(h).unwrap();
@@ -174,7 +188,7 @@ fn list_note_versions_returns_newest_first() {
     assert_eq!(versions[0].author, "agent:bot");
     assert_eq!(versions[0].changed_fields, vec!["Back".to_string()]);
     // Middle commit changed Front.
-    assert_eq!(versions[1].author, "human");
+    assert_eq!(versions[1].author, "user");
     assert_eq!(versions[1].changed_fields, vec!["Front".to_string()]);
     // Oldest commit (the initial add) has no prior to diff against.
     assert!(versions[2].changed_fields.is_empty());
@@ -274,8 +288,8 @@ fn commit_without_snapshot_does_not_steal_unrelated_dirt() {
     col.add_note(&mut note_b, crate::decks::DeckId(1)).unwrap();
     let info = SessionInfo {
         id: "11111111111111111111111111111111".to_string(),
-        kind: SessionKind::Editor,
-        author: "addcards".to_string(),
+        kind: SessionKind::Agent,
+        actor_name: "addcards".to_string(),
     };
     let h = col.begin_versioning_session(info);
     // Strict mode: a session without a snapshot is a no-op. The unflushed
@@ -288,7 +302,7 @@ fn commit_without_snapshot_does_not_steal_unrelated_dirt() {
     let a_versions = col.list_note_versions(note_a.id).unwrap();
     let leaked: Vec<&str> = a_versions
         .iter()
-        .filter(|v| v.author == "addcards")
+        .filter(|v| v.author == "agent:addcards")
         .map(|v| v.commit_hash.as_str())
         .collect();
     assert!(
@@ -321,7 +335,7 @@ fn addcards_flow_without_mark_loses_new_note_history() {
     let info = SessionInfo {
         id: "addcards00000000000000000000beef".to_string(),
         kind: SessionKind::Editor,
-        author: "human".to_string(),
+        actor_name: String::new(),
     };
     let handle = col.begin_versioning_session(info);
     assert!(
@@ -350,7 +364,7 @@ fn addcards_flow_with_mark_records_new_note_history() {
     let info = SessionInfo {
         id: sid,
         kind: SessionKind::Editor,
-        author: "human".to_string(),
+        actor_name: String::new(),
     };
     let handle = col.begin_versioning_session(info);
     assert!(
@@ -363,7 +377,7 @@ fn addcards_flow_with_mark_records_new_note_history() {
         1,
         "newly-added note must have exactly one history entry",
     );
-    assert_eq!(versions[0].author, "human");
+    assert_eq!(versions[0].author, "user");
 }
 
 /// Issue 3 — `restore_note_version` calls `update_note` (which opens a
@@ -406,7 +420,7 @@ fn restore_leaves_connection_usable_for_subsequent_versioning() {
     let info = SessionInfo {
         id: sid,
         kind: SessionKind::Editor,
-        author: "human".to_string(),
+        actor_name: String::new(),
     };
     let h = col.begin_versioning_session(info);
     assert!(
@@ -466,7 +480,7 @@ fn missing_snapshot_does_not_steal_unrelated_dirt() {
     let info = SessionInfo {
         id: "abababababababababababababababab".to_string(),
         kind: SessionKind::Editor,
-        author: "editor-b".to_string(),
+        actor_name: String::new(),
     };
     let h = col.begin_versioning_session(info);
     let hash = col.commit_versioning_session(h).unwrap();
@@ -549,7 +563,7 @@ fn multi_note_session_commits_when_any_snapshot_differs() {
     let h = col.begin_versioning_session(SessionInfo {
         id: "seed-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
         kind: SessionKind::Editor,
-        author: "human".into(),
+        actor_name: String::new(),
     });
     col.commit_versioning_session(h).unwrap().unwrap();
 
@@ -560,7 +574,7 @@ fn multi_note_session_commits_when_any_snapshot_differs() {
     let h = col.begin_versioning_session(SessionInfo {
         id: "seed-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
         kind: SessionKind::Editor,
-        author: "human".into(),
+        actor_name: String::new(),
     });
     col.commit_versioning_session(h).unwrap().unwrap();
 
@@ -574,7 +588,7 @@ fn multi_note_session_commits_when_any_snapshot_differs() {
     let h = col.begin_versioning_session(SessionInfo {
         id: sid,
         kind: SessionKind::Agent,
-        author: "agent:batch".into(),
+        actor_name: "batch".into(),
     });
     let hash = col.commit_versioning_session(h).unwrap();
     assert!(
@@ -587,4 +601,51 @@ fn multi_note_session_commits_when_any_snapshot_differs() {
         "newest version of A should be the agent edit; got {versions_a:?}",
     );
     assert_eq!(versions_a[0].changed_fields, vec!["Front".to_string()]);
+}
+
+/// TODO #4 — author is derived from kind, not taken verbatim from the
+/// client. An Editor session can't masquerade as an agent: whatever
+/// actor_name it passes is ignored and the commit lands as literal
+/// "user".
+#[test]
+fn editor_kind_commits_as_user_regardless_of_actor_name() {
+    let mut col = Collection::new();
+    let mut note = NoteAdder::basic(&mut col).fields(&["x", "back"]).note();
+    col.add_note(&mut note, crate::decks::DeckId(1)).unwrap();
+    let sid = "editorspoof00000000000000000000000".to_string();
+    col.mark_note_added_for_session(&sid, note.id).unwrap();
+    // Editor session tries to pass actor_name="agent:claude" — should be
+    // ignored and the commit attributed to "user".
+    let info = SessionInfo {
+        id: sid,
+        kind: SessionKind::Editor,
+        actor_name: "agent:claude".to_string(),
+    };
+    let h = col.begin_versioning_session(info);
+    col.commit_versioning_session(h).unwrap().unwrap();
+    let versions = col.list_note_versions(note.id).unwrap();
+    assert_eq!(versions[0].author, "user");
+}
+
+/// TODO #4 — Agent and App sessions must carry a non-empty actor_name;
+/// the backend rejects empty ones up front rather than letting a
+/// half-identified commit land in the audit log.
+#[test]
+fn agent_session_without_actor_name_is_rejected() {
+    let mut col = Collection::new();
+    let mut note = NoteAdder::basic(&mut col).fields(&["x", "back"]).note();
+    col.add_note(&mut note, crate::decks::DeckId(1)).unwrap();
+    let sid = "agentnoname00000000000000000000000".to_string();
+    col.mark_note_added_for_session(&sid, note.id).unwrap();
+    let info = SessionInfo {
+        id: sid,
+        kind: SessionKind::Agent,
+        actor_name: String::new(),
+    };
+    let h = col.begin_versioning_session(info);
+    let err = col.commit_versioning_session(h).unwrap_err();
+    assert!(
+        matches!(err, AnkiError::InvalidInput { .. }),
+        "expected InvalidInput, got {err:?}",
+    );
 }

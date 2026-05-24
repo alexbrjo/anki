@@ -27,6 +27,10 @@ impl Collection {
         commit_hash: &str,
         session: SessionInfo,
     ) -> Result<RestoreOutcome> {
+        // Reject invalid session metadata before any DB mutation, otherwise
+        // we'd overwrite the live row and only later fail at commit time —
+        // a restore with no audit entry.
+        session.validate()?;
         let (flds, tags) = load_historical_fields_and_tags(self, nid, commit_hash)?;
 
         // Snapshot the current row BEFORE we overwrite it. commit_session

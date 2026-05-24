@@ -24,19 +24,54 @@ impl SessionKind {
     }
 }
 
+/// Caller-supplied identity for a versioning session. The dolt_log
+/// committer string is *derived* here from `kind` + `actor_name`, not
+/// taken verbatim from the client — that's what stops an agent or app
+/// from masquerading as the user.
 #[derive(Debug, Clone)]
 pub struct SessionInfo {
     pub id: String,
     pub kind: SessionKind,
-    pub author: String,
+    /// Suffix used for Agent / App commits. Empty (and ignored) for
+    /// Editor. Required (non-empty) for Agent / App — `validate` checks.
+    pub actor_name: String,
 }
 
 impl SessionInfo {
-    pub fn editor_human() -> Self {
+    pub fn editor_user() -> Self {
         Self {
             id: new_session_id(),
             kind: SessionKind::Editor,
-            author: "human".to_string(),
+            actor_name: String::new(),
+        }
+    }
+
+    /// Final committer string written to `dolt_log.committer`. Editor
+    /// commits are always literally "user"; Agent / App commits are
+    /// `kind:actor_name`.
+    pub fn author(&self) -> String {
+        match self.kind {
+            SessionKind::Editor => "user".to_string(),
+            SessionKind::Agent => format!("agent:{}", self.actor_name),
+            SessionKind::App => format!("app:{}", self.actor_name),
+        }
+    }
+
+    /// Reject sessions that can't produce a meaningful author. Called
+    /// from `commit_versioning_session` and `restore_note_version`
+    /// before any dolt commit fires.
+    pub fn validate(&self) -> Result<()> {
+        match self.kind {
+            SessionKind::Editor => Ok(()),
+            SessionKind::Agent | SessionKind::App => {
+                if self.actor_name.is_empty() {
+                    crate::invalid_input!(
+                        "versioning session of kind {} requires a non-empty actor_name",
+                        self.kind.as_str()
+                    );
+                }
+                Ok(())
+            }
         }
     }
 }

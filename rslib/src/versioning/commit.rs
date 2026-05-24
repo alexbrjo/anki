@@ -45,14 +45,15 @@ struct CommitMessageMeta<'a> {
 fn format_author(info: &SessionInfo) -> String {
     // Doltlite parses "Name <email>"; we have no real email, so use a
     // placeholder. The author string is the only field we display.
-    format!("{} <local>", info.author)
+    format!("{} <local>", info.author())
 }
 
 fn format_message(info: &SessionInfo) -> String {
+    let author = info.author();
     let meta = CommitMessageMeta {
         session: &info.id,
         kind: info.kind.as_str(),
-        actor: &info.author,
+        actor: &author,
     };
     serde_json::to_string(&meta).expect("metadata serialization is infallible")
 }
@@ -102,6 +103,7 @@ impl Collection {
     /// folded unrelated dirty rows into whichever session happened to
     /// commit next, mis-attributing them in the version log.
     pub fn commit_versioning_session(&mut self, handle: SessionHandle) -> Result<Option<String>> {
+        handle.info.validate()?;
         let session_id = handle.info.id.clone();
         let snaps = self.state.versioning.take(&session_id);
         if snaps.is_empty() {
