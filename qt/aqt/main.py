@@ -363,8 +363,11 @@ class AnkiQt(QMainWindow):
         qconnect(f.delete_2.clicked, self.onRemProfile)
         qconnect(f.profiles.currentRowChanged, self.onProfileRowChange)
         f.statusbar.setVisible(False)
-        qconnect(f.downgrade_button.clicked, self._on_downgrade)
-        f.downgrade_button.setText(tr.profiles_downgrade_and_quit())
+        # Doltlite port: hide the "Downgrade & Quit" button. The downgrade
+        # writes a schema-V11 marker but leaves the file in prolly format,
+        # which stock Anki still can't open. Surfacing it would mislead
+        # users into thinking they'd produced an older-compatible profile.
+        f.downgrade_button.setVisible(False)
         # enter key opens profile
         QShortcut(QKeySequence("Return"), d, activated=self.onOpenProfile)  # type: ignore
         self.refreshProfilesList()
@@ -504,27 +507,16 @@ class AnkiQt(QMainWindow):
         ).failure(self._handle_load_backup_failure).run_in_background()
 
     def _on_downgrade(self) -> None:
-        self.progress.start()
-        profiles = self.pm.profiles()
-
-        def downgrade() -> list[str]:
-            return self.pm.downgrade(profiles)
-
-        def on_done(future: Future) -> None:
-            self.progress.finish()
-            problems = future.result()
-            if not problems:
-                showInfo("Profiles can now be opened with an older version of Anki.")
-            else:
-                showWarning(
-                    "The following profiles could not be downgraded: {}".format(
-                        ", ".join(problems)
-                    )
-                )
-                return
-            self.profileDiag.close()
-
-        self.taskman.run_in_background(downgrade, on_done)
+        # Doltlite port: downgrade-to-V11 is meaningless here. The schema-
+        # marker write succeeds but the file stays in prolly format, which
+        # stock Anki cannot open. The button that called this is now hidden
+        # in onOpenProfile; this stub guards against any other caller path
+        # (kbd shortcut, addon).
+        showWarning(
+            "Profile downgrade is disabled in this build (Doltlite port). "
+            "The collection file is in the prolly format and is not "
+            "compatible with older Anki versions."
+        )
 
     def loadProfile(self, onsuccess: Callable | None = None) -> None:
         if not self.loadCollection():
