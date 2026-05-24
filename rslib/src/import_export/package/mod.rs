@@ -18,4 +18,3 @@ pub use media::MediaIter;
 pub use media::MediaIterEntry;
 pub use media::MediaIterError;
 use meta::Meta;
-use meta::Version;

@@ -51,6 +51,7 @@ pub mod types;
 pub mod undo;
 mod updates;
 pub mod version;
+pub mod versioning;
 
 use std::env;
 use std::sync::LazyLock;

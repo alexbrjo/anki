@@ -23,11 +23,9 @@ use zstd::stream::zio;
 use zstd::Encoder;
 
 use super::super::meta::MetaExt;
-use super::super::meta::VersionExt;
 use super::super::MediaEntries;
 use super::super::MediaEntry;
 use super::super::Meta;
-use super::super::Version;
 use crate::collection::CollectionBuilder;
 use crate::import_export::package::media::new_media_entry;
 use crate::import_export::package::media::MediaCopier;

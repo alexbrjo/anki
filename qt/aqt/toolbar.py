@@ -11,7 +11,6 @@ import aqt
 from anki.sync import SyncStatus
 from aqt import gui_hooks, props
 from aqt.qt import *
-from aqt.sync import get_sync_status
 from aqt.theme import theme_manager
 from aqt.utils import tr
 from aqt.webview import AnkiWebView, AnkiWebViewKind

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import secrets
 from collections.abc import Callable
 
 import aqt.editor
@@ -306,6 +307,21 @@ class AddCards(QMainWindow):
             av_player.stop_and_clear_queue()
             self._load_new_note(sticky_fields_from=note)
             gui_hooks.add_cards_did_add_note(note)
+            # Stamp the add as a Doltlite commit so the note has a
+            # version-history entry from the moment it's created. No prior
+            # snapshot exists, so the backend falls back to dolt_status —
+            # the just-added row makes the notes table dirty, so a commit
+            # fires.
+            try:
+                from anki.versioning_pb2 import SessionKind
+
+                self.mw.col._backend.commit_session(
+                    session_id=secrets.token_hex(16),
+                    kind=SessionKind.SESSION_KIND_EDITOR,
+                    author="human",
+                )
+            except Exception as e:
+                print(f"versioning: add-time commit_session failed: {e}")
 
         add_note(parent=self, note=note, target_deck_id=target_deck_id).success(
             on_success

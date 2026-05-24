@@ -11,6 +11,7 @@ import json
 import mimetypes
 import os
 import re
+import secrets
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -184,6 +185,15 @@ class Editor:
         self.state: EditorState = EditorState.INITIAL
         # used for the io mask editor's context menu
         self.last_io_image_path: str | None = None
+        # Per-note versioning session. The id is rotated each time a note is
+        # loaded (see _begin_versioning_session); commit fires only when the
+        # snapshot taken at load time differs from the row at unload time.
+        # _versioning_active flags whether the current session has a live
+        # snapshot to compare against, so spurious set_note(non_null →
+        # non_null) calls from operation_did_execute don't double-commit.
+        self._versioning_session_id: str = ""
+        self._versioning_active: bool = False
+        self._versioning_author: str = "human"
         self._init_links()
         self.setupOuter()
         self.add_webview()
@@ -201,6 +211,55 @@ class Editor:
         l.setSpacing(0)
         self.widget.setLayout(l)
         self.outerLayout = l
+        self._setup_versions_bar()
+
+    def _setup_versions_bar(self) -> None:
+        """Strip with a single 'Versions' button below the webview that
+        opens the per-note version history dialog. Hidden in Add mode (no
+        note id yet)."""
+        bar = QWidget(self.widget)
+        bar_layout = QHBoxLayout(bar)
+        bar_layout.setContentsMargins(4, 2, 4, 2)
+        bar_layout.addStretch(1)
+        self._versions_button = QPushButton("Versions", bar)
+        self._versions_button.setFlat(True)
+        self._versions_button.clicked.connect(self._open_versions_dialog)
+        self._versions_button.setEnabled(False)
+        bar_layout.addWidget(self._versions_button)
+        self._versions_bar = bar
+        self.outerLayout.addWidget(bar)
+        if self.addMode:
+            bar.hide()
+
+    def _open_versions_dialog(self) -> None:
+        if not self.note:
+            return
+        from aqt.editor_versions import open_versions_dialog
+
+        open_versions_dialog(
+            self.parentWindow,
+            self.mw,
+            self.note.id,
+            on_restored=self._reload_note_after_external_change,
+        )
+
+    def _reload_note_after_external_change(self) -> None:
+        """Refresh the editor view after the backend mutated the note out
+        from under us (e.g. a version restore). Re-snapshots the current
+        session so the editor's eventual commit_session won't fire a
+        duplicate commit for the same content."""
+        if not self.note:
+            return
+        try:
+            self.note.load()
+        except Exception as e:
+            print(f"versioning: note.load() failed after restore: {e}")
+            return
+        self.loadNoteKeepingFocus()
+        # The session snapshot was taken before the restore — re-snapshot
+        # so commit_session at editor close sees no diff vs current.
+        if not self.addMode:
+            self._begin_versioning_session()
 
     def add_webview(self) -> None:
         self.web = EditorWebView(self.widget, self)
@@ -580,12 +639,59 @@ require("anki/ui").loaded.then(() => require("anki/NoteEditor").instances[0].too
         focusTo: int | None = None,
     ) -> None:
         "Make NOTE the current note."
+        # Close out the previous note's versioning session, if any. Browser
+        # row-nav goes through call_after_note_saved before reaching here,
+        # so by this point any pending update_note save has flushed. The
+        # server-side snapshot comparison ensures no-op transitions don't
+        # produce phantom commits.
+        if self.note is not None and self._versioning_active:
+            self._commit_versioning_session()
         self.note = note
         self.currentField = None
+        # The Versions button needs a note id to be useful.
+        if hasattr(self, "_versions_button"):
+            self._versions_button.setEnabled(note is not None and not self.addMode)
         if self.note:
             self.loadNote(focusTo=focusTo)
+            if not self.addMode:
+                self._begin_versioning_session()
         elif hide:
             self.widget.hide()
+
+    def _begin_versioning_session(self) -> None:
+        """Snapshot the current note's content in the backend so the matching
+        commit knows whether anything actually changed. Allocates a fresh
+        session id."""
+        if not self.note:
+            return
+        self._versioning_session_id = secrets.token_hex(16)
+        try:
+            self.mw.col._backend.begin_session(
+                session_id=self._versioning_session_id,
+                nid=int(self.note.id),
+            )
+            self._versioning_active = True
+        except Exception as e:
+            print(f"versioning: begin_session failed: {e}")
+            self._versioning_active = False
+
+    def _commit_versioning_session(self) -> None:
+        """Stamp a commit if the snapshot taken at session start differs
+        from the note's current content. Skip-if-clean is enforced
+        server-side via the snapshot comparison."""
+        try:
+            from anki.versioning_pb2 import SessionKind
+
+            self.mw.col._backend.commit_session(
+                session_id=self._versioning_session_id,
+                kind=SessionKind.SESSION_KIND_EDITOR,
+                author=self._versioning_author,
+            )
+        except Exception as e:
+            # Versioning is best-effort in P0 — never fail the editor close
+            # because the version log couldn't be stamped.
+            print(f"versioning: commit_session failed: {e}")
+        self._versioning_active = False
 
     def loadNoteKeepingFocus(self) -> None:
         self.loadNote(self.currentField)

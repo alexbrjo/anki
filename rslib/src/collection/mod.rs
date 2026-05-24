@@ -138,6 +138,7 @@ pub struct CollectionState {
     /// identical backups.
     pub(crate) last_backup_modified: Option<TimestampMillis>,
     pub(crate) progress: Arc<Mutex<ProgressState>>,
+    pub(crate) versioning: crate::versioning::session::VersioningState,
 }
 
 pub struct Collection {

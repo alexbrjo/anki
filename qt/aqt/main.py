@@ -13,7 +13,6 @@ import traceback
 import weakref
 from argparse import Namespace
 from collections.abc import Callable, Sequence
-from concurrent.futures import Future
 from typing import Any, Literal, TypeVar, cast
 
 from packaging.version import Version
@@ -71,7 +70,7 @@ from aqt.operations.deck import set_current_deck
 from aqt.profiles import ProfileManager as ProfileManagerType
 from aqt.qt import *
 from aqt.qt import sip
-from aqt.sync import sync_collection, sync_login
+from aqt.sync import sync_collection
 from aqt.taskman import TaskManager
 from aqt.theme import Theme, theme_manager
 from aqt.toolbar import BottomWebView, Toolbar, TopWebView
