@@ -11,8 +11,19 @@
 set -euo pipefail
 
 # Pin to a known-good Doltlite revision. Bump intentionally; do not float.
-DOLTLITE_SHA="04d01572eb16f7e9b5fe7d7d6f1e3a3c8c9b2d1e"
+# TODO: set this to the actual full SHA of the Doltlite commit whose
+# `libdoltlite.a` is currently in `rslib/doltlite-sys/lib/`. The previous
+# tracer mentioned `04d01572eb` (10-char prefix) as the basis; please verify
+# by running `git -C <doltlite-clone> log -1 --format=%H` on the same tree.
+DOLTLITE_SHA="${DOLTLITE_SHA:-}"
 DOLTLITE_REPO="https://github.com/dolthub/doltlite.git"
+
+if [[ -z "$DOLTLITE_SHA" ]]; then
+    echo "DOLTLITE_SHA is not set in $0 (and no override in env)." >&2
+    echo "Edit the script to pin the actual commit, or run:" >&2
+    echo "  DOLTLITE_SHA=<full-sha> $0" >&2
+    exit 1
+fi
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 out_dir="$repo_root/rslib/doltlite-sys"

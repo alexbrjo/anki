@@ -9,6 +9,8 @@ fn main() {
         println!("cargo:rustc-link-arg=-mmacosx-version-min=11");
     }
 
+    emit_force_load_libdoltlite();
+
     // On Windows, we need to be able to link with python3.lib
     if cfg!(windows) {
         use std::process::Command;
@@ -30,4 +32,13 @@ fn main() {
         let libs_path = stdlib_path + "s";
         println!("cargo:rustc-link-search={libs_path}");
     }
+}
+
+include!("../../build/doltlite_force_load.rs");
+
+fn emit_force_load_libdoltlite() {
+    force_load_libdoltlite(
+        env!("CARGO_MANIFEST_DIR"),
+        &["..", "..", "rslib", "doltlite-sys", "lib"],
+    );
 }
