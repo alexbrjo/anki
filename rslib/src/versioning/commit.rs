@@ -21,6 +21,10 @@
 //! field bytes differ from the stored bytes, which can happen even when the
 //! user typed nothing (HTML round-trip). Comparing the actual row bytes at
 //! session start vs. session end is the authoritative signal.
+//!
+//! Sessions without a recorded snapshot are no-ops on commit — see
+//! `commit_versioning_session`. Callers that want a commit must call
+//! `snapshot_note_for_session` first.
 
 use rusqlite::params;
 use rusqlite::OptionalExtension;
@@ -64,39 +68,49 @@ impl Collection {
     /// Record the note's current row contents under `session_id`. The next
     /// `commit_versioning_session` for the same session id will compare
     /// against this snapshot and skip the commit if nothing actually
-    /// changed. Pass the id of an existing note — if the note doesn't
-    /// exist yet (Add Cards flow), don't snapshot at all and the commit
-    /// will fall back to the older `dolt_status` check.
+    /// changed.
+    ///
+    /// Callers MUST snapshot before committing: an absent snapshot means
+    /// "no commit". For paths that add a brand-new note (Add Cards flow),
+    /// use [`Self::mark_note_added_for_session`] instead, which records
+    /// `prior: None` so the subsequent commit fires.
     pub fn snapshot_note_for_session(&mut self, session_id: &str, nid: NoteId) -> Result<()> {
-        let row = read_note_content(self, nid)?;
-        let Some((flds, tags)) = row else {
-            // Note not present (e.g. it was deleted between begin and now).
-            // Treat as no snapshot — caller will get a fall-through commit
-            // or a no-op depending on dolt_status.
-            return Ok(());
-        };
+        let prior = read_note_content(self, nid)?;
         self.state
             .versioning
-            .store(session_id.to_string(), NoteSnapshot { nid, flds, tags });
+            .store(session_id.to_string(), NoteSnapshot { nid, prior });
         Ok(())
     }
 
-    /// Stamp a new commit if the snapshotted note actually changed (or if
-    /// no snapshot was taken and the notes table is dirty at the engine
-    /// level). Returns the new commit hash, or `None` if nothing was
-    /// committed.
+    /// Record that `session_id` intends to commit `nid` as a newly-added
+    /// note. The snapshot's `prior` is forced to `None`, so the next
+    /// `commit_versioning_session` will see `None → Some(current)` and
+    /// stamp a commit. Call this after `add_note` (when `nid` is known).
+    pub fn mark_note_added_for_session(
+        &mut self,
+        session_id: &str,
+        nid: NoteId,
+    ) -> Result<()> {
+        self.state
+            .versioning
+            .store(session_id.to_string(), NoteSnapshot { nid, prior: None });
+        Ok(())
+    }
+
+    /// Stamp a new commit if the snapshotted note actually changed. Returns
+    /// the new commit hash, or `None` if nothing was committed (including
+    /// the case where no snapshot was recorded for this session).
+    ///
+    /// Strict mode: a missing snapshot is treated as "no intent to commit".
+    /// The previous fallback to a connection-wide `dolt_status` check
+    /// folded unrelated dirty rows into whichever session happened to
+    /// commit next, mis-attributing them in the version log.
     pub fn commit_versioning_session(&mut self, handle: SessionHandle) -> Result<Option<String>> {
         let session_id = handle.info.id.clone();
-        let snapshot = self.state.versioning.take(&session_id);
-
-        let should_commit = match snapshot {
-            Some(snap) => snapshot_differs_from_current(self, &snap)?,
-            // No snapshot recorded for this session — fall back to the
-            // engine-level dirty check so legacy callers (and the Add Cards
-            // flow, where there's no prior content to snapshot) still work.
-            None => notes_dirty(self)?,
+        let Some(snap) = self.state.versioning.take(&session_id) else {
+            return Ok(None);
         };
-        if !should_commit {
+        if !snapshot_differs_from_current(self, &snap)? {
             return Ok(None);
         }
         stage_all(self)?;
@@ -118,21 +132,7 @@ fn read_note_content(col: &Collection, nid: NoteId) -> Result<Option<(String, St
 
 fn snapshot_differs_from_current(col: &Collection, snap: &NoteSnapshot) -> Result<bool> {
     let current = read_note_content(col, snap.nid)?;
-    Ok(match current {
-        // Note was deleted during the session — counts as a change worth
-        // recording, so the deletion shows up in history.
-        None => true,
-        Some((flds, tags)) => flds != snap.flds || tags != snap.tags,
-    })
-}
-
-fn notes_dirty(col: &Collection) -> Result<bool> {
-    let dirty = col
-        .storage
-        .db
-        .prepare_cached("SELECT 1 FROM dolt_status WHERE table_name='notes' LIMIT 1")?
-        .exists([])?;
-    Ok(dirty)
+    Ok(current != snap.prior)
 }
 
 fn stage_all(col: &Collection) -> Result<()> {

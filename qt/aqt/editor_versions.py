@@ -3,11 +3,12 @@
 
 """Note-version history sidebar.
 
-A collapsible right-hand panel attached to the editor. Lists the live note
-as ``(current)`` plus all prior commits newest-first; selecting an old row
-loads its content into the editor as a non-destructive preview. The
-``Revert to selected`` button writes a new commit equal to the selected
-version (append-only — in-between versions remain in history).
+A collapsible right-hand panel attached to the editor. Lists all commits
+for the note newest-first; the newest row is labeled ``(current)`` and
+represents the live note. Selecting an older row loads its content into
+the editor as a non-destructive preview. The ``Revert to selected`` button
+writes a new commit equal to the selected version (append-only —
+in-between versions remain in history).
 """
 
 from __future__ import annotations
@@ -39,16 +40,16 @@ if TYPE_CHECKING:
 
 
 SIDEBAR_WIDTH = 280
-CURRENT_SENTINEL = ""  # commit hash for the "(current)" row
 
 
 class VersionsSidebar(QFrame):
-    """Right-hand panel listing the live note + prior versions.
+    """Right-hand panel listing prior versions of the loaded note.
 
     Lifecycle: created once per ``Editor``, hidden by default. The editor
     calls ``reload(nid)`` when the loaded note changes or the sidebar is
-    shown. Selecting a row previews that version in the editor; selecting
-    ``(current)`` exits preview.
+    shown. The newest row is labeled ``(current)`` and represents the live
+    note — selecting it exits preview and disables Revert. Selecting an
+    older row previews that version in the editor.
     """
 
     def __init__(self, parent: QWidget, editor: Editor) -> None:
@@ -56,6 +57,7 @@ class VersionsSidebar(QFrame):
         self.editor = editor
         self.mw = editor.mw
         self.nid: NoteId | None = None
+        self._current_hash: str | None = None
         self._on_restored_callback: Callable[[], None] | None = None
         self._suppress_selection_change = False
         self.setFrameShape(QFrame.Shape.StyledPanel)
@@ -101,10 +103,11 @@ class VersionsSidebar(QFrame):
     def reload(self, nid: NoteId | None) -> None:
         """Repopulate the list for ``nid`` (or clear if ``None``).
 
-        Always selects the ``(current)`` row, which has the side-effect of
-        exiting any active preview in the editor.
+        The newest version is selected and labeled ``(current)``; selecting
+        it exits any active preview in the editor.
         """
         self.nid = nid
+        self._current_hash = None
         self._suppress_selection_change = True
         try:
             self.list.clear()
@@ -112,22 +115,23 @@ class VersionsSidebar(QFrame):
             if nid is None:
                 self.list.addItem("No note loaded.")
                 return
-            current = QListWidgetItem("(current)\nlive note", self.list)
-            current.setData(Qt.ItemDataRole.UserRole, CURRENT_SENTINEL)
             try:
                 versions = self.mw.col._backend.list_note_versions(nid=int(nid))
             except Exception as e:
                 self.list.addItem(f"Could not load versions: {e}")
-                self.list.setCurrentItem(current)
+                return
+            if not versions:
+                self.list.addItem("No version history for this note.")
                 return
             last_index = len(versions) - 1
+            self._current_hash = versions[0].commit_hash
             for i, v in enumerate(versions):
-                self._add_row(v, is_oldest=(i == last_index))
-            self.list.setCurrentItem(current)
+                self._add_row(v, is_current=(i == 0), is_oldest=(i == last_index))
+            self.list.setCurrentRow(0)
         finally:
             self._suppress_selection_change = False
 
-    def _add_row(self, v: NoteVersion, is_oldest: bool) -> None:
+    def _add_row(self, v: NoteVersion, is_current: bool, is_oldest: bool) -> None:
         when = _format_timestamp(v.timestamp_secs)
         who = v.author or "?"
         if v.changed_fields:
@@ -136,7 +140,8 @@ class VersionsSidebar(QFrame):
             fields = "(initial)"
         else:
             fields = "(no field change)"
-        text = f"{when}\n{who} · {fields}"
+        label = "(current) " if is_current else ""
+        text = f"{label}{when}\n{who} · {fields}"
         item = QListWidgetItem(text, self.list)
         item.setData(Qt.ItemDataRole.UserRole, v.commit_hash)
         item.setToolTip(f"{when}\n{who}\n{fields}\ncommit {v.commit_hash[:12]}")
@@ -150,12 +155,13 @@ class VersionsSidebar(QFrame):
             self.revert_btn.setEnabled(False)
             return
         commit_hash = current.data(Qt.ItemDataRole.UserRole)
-        if commit_hash == CURRENT_SENTINEL:
-            self.revert_btn.setEnabled(False)
-            self.editor.exit_version_preview()
-            return
         if not commit_hash:
             self.revert_btn.setEnabled(False)
+            return
+        if commit_hash == self._current_hash:
+            # The newest row IS the live note; no preview, no revert target.
+            self.revert_btn.setEnabled(False)
+            self.editor.exit_version_preview()
             return
         self.revert_btn.setEnabled(True)
         try:
@@ -172,7 +178,7 @@ class VersionsSidebar(QFrame):
         if item is None or self.nid is None:
             return
         commit_hash = item.data(Qt.ItemDataRole.UserRole)
-        if not commit_hash or commit_hash == CURRENT_SENTINEL:
+        if not commit_hash or commit_hash == self._current_hash:
             return
         confirm = QMessageBox.question(
             self,

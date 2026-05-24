@@ -35,9 +35,11 @@ fn session(author: &str) -> SessionInfo {
 #[test]
 fn commit_records_edits() {
     let mut col = Collection::new();
-    NoteAdder::basic(&mut col)
+    let note = NoteAdder::basic(&mut col)
         .fields(&["front", "back"])
         .add(&mut col);
+    col.mark_note_added_for_session(&session("human").id, note.id)
+        .unwrap();
 
     let before = dolt_log_len(&col);
     let handle = col.begin_versioning_session(session("human"));
@@ -66,6 +68,8 @@ fn snapshot_skips_commit_when_content_unchanged() {
     let note = NoteAdder::basic(&mut col)
         .fields(&["unchanged", "back"])
         .add(&mut col);
+    col.mark_note_added_for_session(&session("human").id, note.id)
+        .unwrap();
 
     // Flush the add as a first commit so we have a baseline.
     let h = col.begin_versioning_session(session("human"));
@@ -98,6 +102,8 @@ fn snapshot_commits_when_content_changes() {
     let mut note = NoteAdder::basic(&mut col)
         .fields(&["before", "back"])
         .add(&mut col);
+    col.mark_note_added_for_session(&session("human").id, note.id)
+        .unwrap();
     let h = col.begin_versioning_session(session("human"));
     col.commit_versioning_session(h).unwrap().unwrap();
 
@@ -120,9 +126,11 @@ fn snapshot_commits_when_content_changes() {
 #[test]
 fn clean_session_makes_no_commit() {
     let mut col = Collection::new();
-    NoteAdder::basic(&mut col)
+    let note = NoteAdder::basic(&mut col)
         .fields(&["front", "back"])
         .add(&mut col);
+    col.mark_note_added_for_session(&session("human").id, note.id)
+        .unwrap();
 
     // First commit to flush the add.
     let h = col.begin_versioning_session(session("human"));
@@ -141,14 +149,20 @@ fn list_note_versions_returns_newest_first() {
     let mut col = Collection::new();
     let mut note = NoteAdder::basic(&mut col).fields(&["one", "back"]).note();
     col.add_note(&mut note, crate::decks::DeckId(1)).unwrap();
+    col.mark_note_added_for_session(&session("human").id, note.id)
+        .unwrap();
     let h = col.begin_versioning_session(session("human"));
     col.commit_versioning_session(h).unwrap().unwrap();
 
+    col.snapshot_note_for_session(&session("human").id, note.id)
+        .unwrap();
     note.fields_mut()[0] = "two".to_string();
     col.update_note(&mut note).unwrap();
     let h = col.begin_versioning_session(session("human"));
     col.commit_versioning_session(h).unwrap().unwrap();
 
+    col.snapshot_note_for_session(&session("agent:bot").id, note.id)
+        .unwrap();
     note.fields_mut()[1] = "back2".to_string();
     col.update_note(&mut note).unwrap();
     let h = col.begin_versioning_session(session("agent:bot"));
@@ -172,9 +186,13 @@ fn restore_writes_a_new_commit_and_keeps_in_betweens() {
     let mut col = Collection::new();
     let mut note = NoteAdder::basic(&mut col).fields(&["v1", "back"]).note();
     col.add_note(&mut note, crate::decks::DeckId(1)).unwrap();
+    col.mark_note_added_for_session(&session("human").id, note.id)
+        .unwrap();
     let h = col.begin_versioning_session(session("human"));
     col.commit_versioning_session(h).unwrap().unwrap();
 
+    col.snapshot_note_for_session(&session("agent:rogue").id, note.id)
+        .unwrap();
     note.fields_mut()[0] = "v2".to_string();
     col.update_note(&mut note).unwrap();
     let h = col.begin_versioning_session(session("agent:rogue"));
@@ -215,11 +233,231 @@ fn restore_writes_a_new_commit_and_keeps_in_betweens() {
 #[test]
 fn agent_author_round_trips() {
     let mut col = Collection::new();
-    NoteAdder::basic(&mut col).fields(&["f", "b"]).add(&mut col);
+    let note = NoteAdder::basic(&mut col).fields(&["f", "b"]).add(&mut col);
+    col.mark_note_added_for_session(&session("agent:test-bot").id, note.id)
+        .unwrap();
 
     let h = col.begin_versioning_session(session("agent:test-bot"));
     col.commit_versioning_session(h).unwrap().unwrap();
 
     let (_, committer, _) = newest_commit(&col);
     assert_eq!(committer, "agent:test-bot");
+}
+
+// =============================================================================
+// Regression tests for known correctness/robustness issues from the code
+// review. Tests marked #[ignore] currently fail and document the desired
+// post-fix behavior; run them with `cargo test -- --ignored versioning`.
+// =============================================================================
+
+/// Issue 2 — qt/aqt/addcards.py calls commit_session without a prior
+/// snapshot. The backend used to fall back to a connection-wide
+/// `dolt_status` check, folding unrelated dirty rows into the addcards
+/// commit and mis-attributing them. Fixed by requiring a snapshot.
+#[test]
+fn commit_without_snapshot_does_not_steal_unrelated_dirt() {
+    let mut col = Collection::new();
+    let mut note_a = NoteAdder::basic(&mut col).fields(&["A", "back"]).note();
+    col.add_note(&mut note_a, crate::decks::DeckId(1)).unwrap();
+    col.mark_note_added_for_session(&session("human").id, note_a.id)
+        .unwrap();
+    let h = col.begin_versioning_session(session("human"));
+    col.commit_versioning_session(h).unwrap().unwrap();
+
+    // Editor for note A edits it but never closes (no commit_session yet).
+    note_a.fields_mut()[0] = "A-edited".to_string();
+    col.update_note(&mut note_a).unwrap();
+
+    // Meanwhile, addcards adds a brand-new note B and calls commit_session
+    // without a snapshot — exactly the codepath in qt/aqt/addcards.py.
+    let mut note_b = NoteAdder::basic(&mut col).fields(&["B", "back"]).note();
+    col.add_note(&mut note_b, crate::decks::DeckId(1)).unwrap();
+    let info = SessionInfo {
+        id: "11111111111111111111111111111111".to_string(),
+        kind: SessionKind::Editor,
+        author: "addcards".to_string(),
+    };
+    let h = col.begin_versioning_session(info);
+    // Strict mode: a session without a snapshot is a no-op. The unflushed
+    // edit to note A remains pending; whichever session eventually snapshots
+    // and commits A's nid will own it. Either way, addcards must not.
+    assert!(col.commit_versioning_session(h).unwrap().is_none());
+
+    // Note A's history must NOT contain a row authored by "addcards" — the
+    // user never asked addcards to touch note A.
+    let a_versions = col.list_note_versions(note_a.id).unwrap();
+    let leaked: Vec<&str> = a_versions
+        .iter()
+        .filter(|v| v.author == "addcards")
+        .map(|v| v.commit_hash.as_str())
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "addcards commit leaked into note A's history: {leaked:?}"
+    );
+}
+
+/// Issue 3 — `restore_note_version` calls `update_note` (which opens a
+/// transaction via `Collection::transact`) and then `commit_versioning_session`
+/// (which runs `dolt_commit`, an autocommit-only operation per
+/// commit.rs:9). The current ordering works because `transact` has fully
+/// released by the time the commit fires; this test locks that invariant
+/// in so a future refactor that interleaves them gets caught.
+#[test]
+fn restore_leaves_connection_usable_for_subsequent_versioning() {
+    let mut col = Collection::new();
+    let mut note = NoteAdder::basic(&mut col).fields(&["v1", "back"]).note();
+    col.add_note(&mut note, crate::decks::DeckId(1)).unwrap();
+    col.mark_note_added_for_session(&session("human").id, note.id)
+        .unwrap();
+    let h = col.begin_versioning_session(session("human"));
+    col.commit_versioning_session(h).unwrap().unwrap();
+
+    col.snapshot_note_for_session(&session("human").id, note.id)
+        .unwrap();
+    note.fields_mut()[0] = "v2".to_string();
+    col.update_note(&mut note).unwrap();
+    let h = col.begin_versioning_session(session("human"));
+    col.commit_versioning_session(h).unwrap().unwrap();
+
+    let versions = col.list_note_versions(note.id).unwrap();
+    let v1_hash = versions.last().unwrap().commit_hash.clone();
+
+    col.restore_note_version(note.id, &v1_hash, session("human"))
+        .unwrap();
+
+    // Immediately after the restore, an ordinary edit + commit must work.
+    // A leftover open transaction here would surface as either an error
+    // from `dolt_commit` or a silently-dropped change.
+    let sid = "22222222222222222222222222222222".to_string();
+    col.snapshot_note_for_session(&sid, note.id).unwrap();
+    let mut fresh = col.storage.get_note(note.id).unwrap().unwrap();
+    fresh.fields_mut()[0] = "v3".to_string();
+    col.update_note(&mut fresh).unwrap();
+    let info = SessionInfo {
+        id: sid,
+        kind: SessionKind::Editor,
+        author: "human".to_string(),
+    };
+    let h = col.begin_versioning_session(info);
+    assert!(
+        col.commit_versioning_session(h).unwrap().is_some(),
+        "post-restore versioning session must produce a commit"
+    );
+
+    // And the new content is what's actually in the row.
+    let after = col.storage.get_note(note.id).unwrap().unwrap();
+    assert_eq!(after.fields()[0], "v3");
+}
+
+/// Issue 4a — baseline: missing snapshot + clean notes table = no commit.
+/// This currently passes by luck (the fallback dirty check is false), but
+/// belongs in the suite so the eventual fix doesn't regress it.
+#[test]
+fn missing_snapshot_with_clean_table_makes_no_commit() {
+    let mut col = Collection::new();
+    let note = NoteAdder::basic(&mut col)
+        .fields(&["front", "back"])
+        .add(&mut col);
+    col.mark_note_added_for_session(&session("human").id, note.id)
+        .unwrap();
+    let h = col.begin_versioning_session(session("human"));
+    col.commit_versioning_session(h).unwrap().unwrap();
+
+    let before = dolt_log_len(&col);
+    // No snapshot, no edits.
+    let h = col.begin_versioning_session(session("human"));
+    let hash = col.commit_versioning_session(h).unwrap();
+    assert!(hash.is_none());
+    assert_eq!(dolt_log_len(&col), before);
+}
+
+/// Issue 4b — qt/aqt/editor.py used to swallow `begin_session` failures
+/// with a bare `print(...)`. With no snapshot recorded, the backend would
+/// fall through to `notes_dirty()` and stamp a phantom commit covering
+/// whatever unrelated dirt was on the connection. Fixed by requiring a
+/// snapshot in `commit_versioning_session`.
+#[test]
+fn missing_snapshot_does_not_steal_unrelated_dirt() {
+    let mut col = Collection::new();
+    let mut note1 = NoteAdder::basic(&mut col).fields(&["one", "back"]).note();
+    col.add_note(&mut note1, crate::decks::DeckId(1)).unwrap();
+    col.mark_note_added_for_session(&session("human").id, note1.id)
+        .unwrap();
+    let h = col.begin_versioning_session(session("human"));
+    col.commit_versioning_session(h).unwrap().unwrap();
+
+    // Editor A: edits note1 but its commit_session hasn't run yet.
+    note1.fields_mut()[0] = "one-edited".to_string();
+    col.update_note(&mut note1).unwrap();
+
+    // Editor B: begin_session "failed silently" — we skip the snapshot call.
+    // Closing editor B fires commit_session.
+    let before = dolt_log_len(&col);
+    let info = SessionInfo {
+        id: "abababababababababababababababab".to_string(),
+        kind: SessionKind::Editor,
+        author: "editor-b".to_string(),
+    };
+    let h = col.begin_versioning_session(info);
+    let hash = col.commit_versioning_session(h).unwrap();
+    assert!(
+        hash.is_none(),
+        "editor-b commit_session without a snapshot must be a no-op; \
+         got commit {hash:?}, dolt_log grew {before} -> {}",
+        dolt_log_len(&col)
+    );
+}
+
+/// Issue 5 — `list_note_versions` used to walk dolt_commit_ancestors with
+/// `parent_index = 0` only, hiding any commit reachable through a non-zero
+/// parent (the merged-in side of a merge). Fixed by walking every ancestor
+/// and deduping by commit_hash.
+#[test]
+fn merge_commits_appear_in_history() {
+    let mut col = Collection::new();
+    let mut note = NoteAdder::basic(&mut col).fields(&["root", "back"]).note();
+    col.add_note(&mut note, crate::decks::DeckId(1)).unwrap();
+    col.mark_note_added_for_session(&session("human").id, note.id)
+        .unwrap();
+    let h = col.begin_versioning_session(session("human"));
+    col.commit_versioning_session(h).unwrap().unwrap();
+
+    let default_branch: String = col
+        .storage
+        .db
+        .query_row("SELECT dolt_default_branch()", [], |r| r.get(0))
+        .expect("doltlite exposes dolt_default_branch()");
+
+    col.storage
+        .db
+        .execute_batch(
+            "SELECT dolt_branch('feature');\
+             SELECT dolt_checkout('feature');",
+        )
+        .expect("doltlite supports dolt_branch + dolt_checkout");
+
+    col.snapshot_note_for_session(&session("agent:feature").id, note.id)
+        .unwrap();
+    note.fields_mut()[0] = "feature-edit".to_string();
+    col.update_note(&mut note).unwrap();
+    let h = col.begin_versioning_session(session("agent:feature"));
+    col.commit_versioning_session(h).unwrap().unwrap();
+
+    // Force a non-fast-forward merge so the feature commit is reachable
+    // only via parent_index = 1 of the merge commit.
+    col.storage
+        .db
+        .execute_batch(&format!(
+            "SELECT dolt_checkout('{default_branch}');\
+             SELECT dolt_merge('--no-ff', 'feature');"
+        ))
+        .expect("doltlite supports dolt_merge --no-ff");
+
+    let versions = col.list_note_versions(note.id).unwrap();
+    let authors: Vec<&str> = versions.iter().map(|v| v.author.as_str()).collect();
+    assert!(
+        authors.contains(&"agent:feature"),
+        "merge-side commit should appear in history; got {authors:?}"
+    );
 }

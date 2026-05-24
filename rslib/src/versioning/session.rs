@@ -63,11 +63,15 @@ fn new_session_id() -> String {
 /// recomputation that happens inside `update_note` is reflected on both
 /// sides — a no-op editor open then close leaves the snapshot equal to
 /// the current state and we skip the commit.
+///
+/// `prior` is `None` when the note did not exist at snapshot time
+/// (e.g. the Add Cards flow snapshots before the row is created). The
+/// commit then fires iff `prior != current` — including the
+/// None→Some(content) transition for an add.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NoteSnapshot {
     pub nid: NoteId,
-    pub flds: String,
-    pub tags: String,
+    pub prior: Option<(String, String)>,
 }
 
 /// In-memory map of session-id → snapshot, lives on `CollectionState`.

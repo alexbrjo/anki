@@ -69,10 +69,10 @@ impl Collection {
 
 fn load_history(col: &Collection, nid: NoteId) -> Result<Vec<HistoryRow>> {
     // dolt_log.date is only second-resolution, so two commits made within
-    // the same second tie. Walk the first-parent chain from HEAD via
-    // dolt_commit_ancestors instead — this gives true topological depth
-    // (0 = HEAD, growing toward root), which is the only signal that
-    // works for sub-second-rate commits.
+    // the same second tie. Walk every ancestor reachable from HEAD via
+    // dolt_commit_ancestors (any parent_index) so merged-in side commits
+    // are visible too; dedup by commit_hash and order by the shortest
+    // path to HEAD (newest first).
     let mut stmt = col.storage.db.prepare_cached(
         "WITH RECURSIVE chain(commit_hash, depth) AS (
              SELECT hash, 0
@@ -82,12 +82,16 @@ fn load_history(col: &Collection, nid: NoteId) -> Result<Vec<HistoryRow>> {
              SELECT a.parent_hash, c.depth + 1
              FROM chain c
              JOIN dolt_commit_ancestors a
-               ON c.commit_hash = a.commit_hash AND a.parent_index = 0
+               ON c.commit_hash = a.commit_hash
          )
          SELECT h.commit_hash, l.date, h.committer, l.message, h.mid, h.flds
          FROM dolt_history_notes h
          JOIN dolt_log l USING (commit_hash)
-         JOIN chain c USING (commit_hash)
+         JOIN (
+             SELECT commit_hash, MIN(depth) AS depth
+             FROM chain
+             GROUP BY commit_hash
+         ) c USING (commit_hash)
          WHERE h.id = ?
          ORDER BY c.depth ASC",
     )?;
