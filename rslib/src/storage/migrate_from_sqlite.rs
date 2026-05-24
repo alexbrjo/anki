@@ -119,6 +119,16 @@ fn migrate_in_place(path: &Path) -> std::io::Result<()> {
     if !backup.exists() {
         fs::copy(path, &backup)?;
     }
+    // The helper needs to mutate its source's sqlite_master (to strip
+    // COLLATE clauses Doltlite-prolly can't satisfy). We use a
+    // throwaway "scratch" copy for that mutation; the .legacy-backup
+    // stays as the true preserved snapshot, the original file (`path`)
+    // stays untouched until the atomic rename succeeds.
+    let scratch = with_suffix(path, ".scratch");
+    if scratch.exists() {
+        fs::remove_file(&scratch)?;
+    }
+    fs::copy(path, &scratch)?;
 
     let migrating = with_suffix(path, ".migrating");
     if migrating.exists() {
@@ -140,7 +150,7 @@ fn migrate_in_place(path: &Path) -> std::io::Result<()> {
     // just "exit status 1". The helper writes both its progress
     // ("N tables, M rows copied") and any errors to stderr.
     let out = Command::new(&helper)
-        .arg(path)
+        .arg(&scratch)
         .arg(&migrating)
         .output()?;
     if !out.status.success() {
@@ -161,6 +171,8 @@ fn migrate_in_place(path: &Path) -> std::io::Result<()> {
     // Atomic on POSIX. On Windows fs::rename overwrites unless
     // both paths exist on different volumes, which we control.
     fs::rename(&migrating, path)?;
+    // Best-effort scratch cleanup; not fatal if it fails.
+    let _ = fs::remove_file(&scratch);
     Ok(())
 }
 

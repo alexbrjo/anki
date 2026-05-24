@@ -33,26 +33,29 @@ pub struct Stats {
 pub fn migrate(src: &Path, dst: &Path) -> Result<Stats> {
     use rusqlite::OpenFlags;
 
+    // Open source READ-WRITE: we need to rewrite sqlite_master in place
+    // to strip COLLATE annotations before SELECT can prepare against
+    // tables that reference them. The shim's `.legacy-backup` copy
+    // preserves the user's original file, so mutating this one is safe.
     let source = rusqlite::Connection::open_with_flags(
         src,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
-    .context("opening source SQLite DB")?;
+    .context("opening source SQLite DB read-write")?;
 
     let dest = doltlite::Connection::open(dst).context("creating dest DB")?;
 
-    // Source still needs the legacy `unicase` collation registered to
-    // prepare SELECTs over tables that declare `name text COLLATE
-    // unicase` (source is stock SQLite, accepts custom collations).
-    register_stub_collations_rusqlite(&source)
-        .context("registering placeholder collation on source")?;
-
-    // We do NOT register on dest. Doltlite-prolly disallows user
-    // collations entirely (see PROLLY_BLOCKER.md). Instead we strip
-    // `COLLATE unicase` from every DDL string before replay — the
-    // post-migration schema is fully prolly-friendly with BINARY
-    // collation. Users lose case-insensitive name uniqueness;
-    // documented in the migration changelog.
+    // Rewrite the source's stored DDL to drop `COLLATE unicase` and
+    // line comments. Doltlite-prolly disallows registering custom
+    // collations, so we cannot supply a stub; we must instead make
+    // the schema not reference the unknown collation at all.
+    //
+    // `PRAGMA writable_schema = ON` makes sqlite_master writable in
+    // this connection (changes persist to disk but only become visible
+    // to other connections after the conn is closed). After mutating
+    // we don't need to bring it back to OFF — connection-scoped.
+    sanitize_source_schema_in_place(&source)
+        .context("sanitizing source DDL for prolly compatibility")?;
 
     dest.execute_batch("BEGIN")?;
 
@@ -86,18 +89,47 @@ pub fn migrate(src: &Path, dst: &Path) -> Result<Stats> {
     Ok(stats)
 }
 
-/// Names of every custom collation that may appear in a legacy Anki
-/// schema. Only the SOURCE side needs these registered (the dest is
-/// Doltlite-prolly, which doesn't permit user collations — we strip
-/// the COLLATE annotations instead via `strip_collate_unicase`).
-const STUB_COLLATIONS: &[&str] = &["unicase"];
-
-fn register_stub_collations_rusqlite(
-    conn: &rusqlite::Connection,
-) -> rusqlite::Result<()> {
-    for &name in STUB_COLLATIONS {
-        conn.create_collation(name, |a: &str, b: &str| a.cmp(b))?;
+/// Rewrite the source's `sqlite_master.sql` rows in place to strip
+/// `COLLATE unicase` and SQL line comments, so subsequent SELECTs can
+/// be prepared by Doltlite-prolly (which doesn't permit registering
+/// the original collation).
+///
+/// Uses `PRAGMA writable_schema` — the legacy SQLite escape hatch for
+/// editing sqlite_master directly. Doltlite-prolly inherits SQLite's
+/// pragma handling, so this works.
+fn sanitize_source_schema_in_place(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    conn.execute_batch("PRAGMA writable_schema = ON")?;
+    // Collect rows that need rewriting; mutate after to avoid
+    // iterator-invalidation under in-place UPDATE.
+    let mut to_rewrite: Vec<(String, String, String)> = Vec::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT type, name, sql FROM sqlite_master \
+             WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (ty, name, sql) = row?;
+            let sanitized = sanitize_ddl(&sql);
+            if sanitized != sql {
+                to_rewrite.push((ty, name, sanitized));
+            }
+        }
     }
+    for (ty, name, sanitized) in to_rewrite {
+        conn.execute(
+            "UPDATE sqlite_master SET sql = ?1 WHERE type = ?2 AND name = ?3",
+            rusqlite::params![sanitized, ty, name],
+        )?;
+    }
+    // No need to flip writable_schema back to OFF — it's
+    // connection-scoped and the conn is dropped shortly.
     Ok(())
 }
 
