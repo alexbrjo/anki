@@ -262,4 +262,83 @@ mod test {
             &head[..head.len().min(16)]
         );
     }
+
+    /// End-to-end: synthesize a legacy stock-SQLite file (via the system
+    /// `sqlite3` CLI, which is not our linked Doltlite) with the kinds of
+    /// DDL constructs prolly chokes on — `COLLATE unicase` columns, `-- `
+    /// line comments inside CREATE TABLE — plus some data, and confirm
+    /// `migrate_in_place` produces a CTLD-stamped prolly file that
+    /// preserves the rows.
+    #[test]
+    fn migrate_real_legacy_file() {
+        use std::process::Command;
+        crate::storage::sqlite::install_doltlite_auto_extension();
+
+        let path = std::env::temp_dir().join("anki-migrate-roundtrip.db");
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(with_suffix(&path, ".scratch"));
+        let _ = fs::remove_file(with_suffix(&path, ".migrating"));
+
+        // System sqlite3 doesn't have the `unicase` collation registered, so
+        // we can't use `COLLATE unicase` in the fixture DDL. The sanitizer
+        // unit test covers that path; here we focus on the other prolly
+        // failure mode — `-- ` line comments inside CREATE TABLE — plus
+        // table+index+data round-tripping and the WITHOUT ROWID planner
+        // wrinkle.
+        let ddl = "CREATE TABLE decks (
+                id integer PRIMARY KEY,
+                name text NOT NULL,
+                -- a deliberately problematic comment
+                usn integer NOT NULL
+              );
+              CREATE TABLE tags (
+                tag text NOT NULL PRIMARY KEY,
+                usn integer NOT NULL
+              ) WITHOUT ROWID;
+              INSERT INTO decks VALUES (1, 'Default', 0);
+              INSERT INTO decks VALUES (2, 'Spanish', 0);
+              INSERT INTO tags VALUES ('important', 0);
+              INSERT INTO tags VALUES ('todo', 0);";
+        let status = Command::new("sqlite3")
+            .arg(&path)
+            .arg(ddl)
+            .status()
+            .expect("sqlite3 CLI required for this test");
+        assert!(status.success(), "sqlite3 CLI exited non-zero");
+
+        assert_eq!(detect_format(&path).unwrap(), Format::Sqlite);
+        migrate_in_place(&path).expect("migrate_in_place should succeed");
+
+        let head = fs::read(&path).unwrap();
+        assert!(
+            head.starts_with(PROLLY_MAGIC),
+            "after migrate, file should be prolly-format; head={:02x?}",
+            &head[..head.len().min(16)]
+        );
+
+        let db = rusqlite::Connection::open(&path).unwrap();
+        let engine: String = db
+            .query_row("SELECT doltlite_engine()", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(engine, "prolly");
+        let deck_names: Vec<String> = db
+            .prepare("SELECT name FROM decks ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            deck_names,
+            vec!["Default".to_string(), "Spanish".to_string()]
+        );
+        let tag_names: Vec<String> = db
+            .prepare("SELECT tag FROM tags ORDER BY tag")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(tag_names, vec!["important".to_string(), "todo".to_string()]);
+    }
 }
