@@ -136,11 +136,26 @@ fn migrate_in_place(path: &Path) -> std::io::Result<()> {
         )
     })?;
 
-    let status = Command::new(&helper).arg(path).arg(&migrating).status()?;
-    if !status.success() {
+    // Capture stderr so the user gets the actual failure reason, not
+    // just "exit status 1". The helper writes both its progress
+    // ("N tables, M rows copied") and any errors to stderr.
+    let out = Command::new(&helper)
+        .arg(path)
+        .arg(&migrating)
+        .output()?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let stdout = String::from_utf8_lossy(&out.stdout);
         return Err(std::io::Error::other(format!(
-            "anki-migrate-sqlite exited with status {status}"
+            "anki-migrate-sqlite exited with status {}:\n\
+             --- stderr ---\n{stderr}\n--- stdout ---\n{stdout}",
+            out.status
         )));
+    }
+    // Surface the helper's progress line ("N tables, M rows copied")
+    // back to the parent's stderr so the user sees what happened.
+    if !out.stderr.is_empty() {
+        eprintln!("{}", String::from_utf8_lossy(&out.stderr).trim_end());
     }
 
     // Atomic on POSIX. On Windows fs::rename overwrites unless
