@@ -8,6 +8,13 @@ PYO3_NO_PYTHON = "1"
 MACOSX_DEPLOYMENT_TARGET = "11"
 PYTHONDONTWRITEBYTECODE = "1" # prevent junk files on Windows
 
+# Redirect libsqlite3-sys at our vendored libdoltlite.a (renamed to libsqlite3.a
+# via symlink so the linker finds it under the expected name). Doltlite is a
+# drop-in for SQLite at the C ABI, so no FFI changes needed.
+SQLITE3_LIB_DIR = { value = "rslib/doltlite-sys/vendor", relative = true }
+SQLITE3_INCLUDE_DIR = { value = "rslib/doltlite-sys/vendor", relative = true }
+SQLITE3_STATIC = "1"
+
 [term]
 color = "always"
 

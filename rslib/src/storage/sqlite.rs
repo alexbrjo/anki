@@ -2,7 +2,6 @@
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 use std::borrow::Cow;
-use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::fmt::Display;
 use std::hash::Hasher;
@@ -19,7 +18,6 @@ use rusqlite::params;
 use rusqlite::trace::TraceEvent;
 use rusqlite::Connection;
 use serde_json::Value;
-use unicase::UniCase;
 
 use super::upgrades::SCHEMA_MAX_VERSION;
 use super::upgrades::SCHEMA_MIN_VERSION;
@@ -35,10 +33,6 @@ use crate::storage::card::data::CardData;
 use crate::text::without_combining;
 use crate::text::CowMapping;
 
-fn unicase_compare(s1: &str, s2: &str) -> Ordering {
-    UniCase::new(s1).cmp(&UniCase::new(s2))
-}
-
 // fixme: rollback savepoint when tags not changed
 // fixme: need to drop out of wal prior to vacuuming to fix page size of older
 // collections
@@ -48,6 +42,16 @@ fn unicase_compare(s1: &str, s2: &str) -> Ordering {
 pub struct SqliteStorage {
     // currently crate-visible for dbproxy
     pub(crate) db: Connection,
+}
+
+/// Doltlite's prolly engine has its own chunk-store durability/paging model and
+/// rejects B-tree-era configuration pragmas. We detect prolly at open time so
+/// we can skip them; stock-SQLite (B-tree) files still take the legacy path
+/// during one-time migration in `migrate_from_sqlite`.
+pub(crate) fn is_prolly_engine(db: &Connection) -> bool {
+    db.query_row("SELECT doltlite_engine()", [], |row| row.get::<_, String>(0))
+        .map(|s| s == "prolly")
+        .unwrap_or(false)
 }
 
 fn open_or_create_collection_db(path: &Path) -> Result<Connection> {
@@ -62,11 +66,13 @@ fn open_or_create_collection_db(path: &Path) -> Result<Connection> {
 
     db.busy_timeout(std::time::Duration::from_secs(0))?;
 
-    db.pragma_update(None, "locking_mode", "exclusive")?;
-    db.pragma_update(None, "page_size", 4096)?;
+    if !is_prolly_engine(&db) {
+        db.pragma_update(None, "locking_mode", "exclusive")?;
+        db.pragma_update(None, "page_size", 4096)?;
+        db.pragma_update(None, "legacy_file_format", false)?;
+        db.pragma_update(None, "journal_mode", "wal")?;
+    }
     db.pragma_update(None, "cache_size", -40 * 1024)?;
-    db.pragma_update(None, "legacy_file_format", false)?;
-    db.pragma_update(None, "journal_mode", "wal")?;
     // Android has no /tmp folder, and fails in the default config.
     #[cfg(target_os = "android")]
     db.pragma_update(None, "temp_store", &"memory")?;
@@ -84,8 +90,6 @@ fn open_or_create_collection_db(path: &Path) -> Result<Connection> {
     add_extract_fsrs_variable(&db)?;
     add_extract_fsrs_retrievability(&db)?;
     add_extract_fsrs_relative_retrievability(&db)?;
-
-    db.create_collation("unicase", unicase_compare)?;
 
     Ok(db)
 }
@@ -553,7 +557,7 @@ impl SqliteStorage {
     pub(crate) fn close(self, desired_version: Option<SchemaVersion>) -> Result<()> {
         if let Some(version) = desired_version {
             self.downgrade_to(version)?;
-            if version.has_journal_mode_delete() {
+            if version.has_journal_mode_delete() && !is_prolly_engine(&self.db) {
                 self.db.pragma_update(None, "journal_mode", "delete")?;
             }
         }
@@ -561,8 +565,13 @@ impl SqliteStorage {
     }
 
     /// Flush data from WAL file into DB, so the DB is safe to copy. Caller must
-    /// not call this while there is an active transaction.
+    /// not call this while there is an active transaction. No-op on prolly,
+    /// which commits durably to its content-addressed chunk store at COMMIT
+    /// time without a WAL.
     pub(crate) fn checkpoint(&self) -> Result<()> {
+        if is_prolly_engine(&self.db) {
+            return Ok(());
+        }
         if !self.db.is_autocommit() {
             return Err(AnkiError::db_error(
                 "active transaction",

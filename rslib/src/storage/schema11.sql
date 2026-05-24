@@ -21,8 +21,8 @@ CREATE TABLE notes (
   usn integer NOT NULL,
   tags text NOT NULL,
   flds text NOT NULL,
-  -- The use of type integer for sfld is deliberate, because it means that integer values in this
-  -- field will sort numerically.
+  /* The use of type integer for sfld is deliberate, because it means that integer values in this
+     field will sort numerically. */
   sfld integer NOT NULL,
   csum integer NOT NULL,
   flags integer NOT NULL,
@@ -64,17 +64,17 @@ CREATE TABLE graves (
   oid integer NOT NULL,
   type integer NOT NULL
 );
--- syncing
+/* syncing */
 CREATE INDEX ix_notes_usn ON notes (usn);
 CREATE INDEX ix_cards_usn ON cards (usn);
 CREATE INDEX ix_revlog_usn ON revlog (usn);
--- card spacing, etc
+/* card spacing, etc */
 CREATE INDEX ix_cards_nid ON cards (nid);
--- scheduling and deck limiting
+/* scheduling and deck limiting */
 CREATE INDEX ix_cards_sched ON cards (did, queue, due);
--- revlog by card
+/* revlog by card */
 CREATE INDEX ix_revlog_cid ON revlog (cid);
--- field uniqueness
+/* field uniqueness */
 CREATE INDEX ix_notes_csum ON notes (csum);
 INSERT INTO col
 VALUES (

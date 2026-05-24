@@ -304,6 +304,12 @@ fn trace(event: rusqlite::trace::TraceEvent) {
     }
 }
 
+fn is_prolly_engine(db: &Connection) -> bool {
+    db.query_row("SELECT doltlite_engine()", [], |row| row.get::<_, String>(0))
+        .map(|s| s == "prolly")
+        .unwrap_or(false)
+}
+
 pub(crate) fn open_or_create<P: AsRef<Path>>(path: P) -> error::Result<Connection> {
     let mut db = Connection::open(path)?;
 
@@ -314,9 +320,11 @@ pub(crate) fn open_or_create<P: AsRef<Path>>(path: P) -> error::Result<Connectio
         );
     }
 
-    db.pragma_update(None, "page_size", 4096)?;
-    db.pragma_update(None, "legacy_file_format", false)?;
-    db.pragma_update_and_check(None, "journal_mode", "wal", |_| Ok(()))?;
+    if !is_prolly_engine(&db) {
+        db.pragma_update(None, "page_size", 4096)?;
+        db.pragma_update(None, "legacy_file_format", false)?;
+        db.pragma_update_and_check(None, "journal_mode", "wal", |_| Ok(()))?;
+    }
 
     initial_db_setup(&mut db)?;
 
