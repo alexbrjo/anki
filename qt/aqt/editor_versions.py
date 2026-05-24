@@ -135,12 +135,18 @@ class VersionsSidebar(QFrame):
     def _add_row(self, v: NoteVersion, is_current: bool, is_oldest: bool) -> None:
         when = _format_timestamp(v.timestamp_secs)
         who = v.author or "?"
-        if v.changed_fields:
-            fields = ", ".join(v.changed_fields)
+        # Combine field-name list and a "tags" hint. Tag-only edits used
+        # to render as "(no field change)" even though something did
+        # change; surface tags explicitly so the label matches reality.
+        parts: list[str] = list(v.changed_fields)
+        if v.tags_changed:
+            parts.append("tags")
+        if parts:
+            fields = ", ".join(parts)
         elif is_oldest:
             fields = "(initial)"
         else:
-            fields = "(no field change)"
+            fields = "(no change)"
         label = "(current) " if is_current else ""
         text = f"{label}{when}\n{who} · {fields}"
         item = QListWidgetItem(text, self.list)

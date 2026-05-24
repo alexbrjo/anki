@@ -119,6 +119,10 @@ message NoteVersion {
   // newest version's notetype — if the notetype was changed across versions,
   // names reflect the current schema.
   repeated string changed_fields = 6;
+  // True if this commit changed the note's tags relative to its prior
+  // commit. Always false for the oldest version. A commit can have
+  // empty `changed_fields` and `tags_changed = true` (tag-only edit).
+  bool tags_changed = 7;
 }
 
 message RestoreNoteVersionRequest {

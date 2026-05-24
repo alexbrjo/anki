@@ -749,3 +749,40 @@ fn diff_note_between_versions_returns_both_sides_and_changed_fields() {
     let same = col.diff_note_between_versions(note.id, &v2, &v2).unwrap();
     assert!(same.changed_fields.is_empty());
 }
+
+/// Tag-only edits used to render as "(no field change)" in the sidebar,
+/// even though the row really did change. `NoteVersion.tags_changed`
+/// now distinguishes the two cases.
+#[test]
+fn tag_only_edit_marks_tags_changed_on_history_row() {
+    let mut col = Collection::new();
+    let mut note = NoteAdder::basic(&mut col).fields(&["one", "back"]).note();
+    col.add_note(&mut note, crate::decks::DeckId(1)).unwrap();
+    col.mark_note_added_for_session(&session("human").id, note.id)
+        .unwrap();
+    let h = col.begin_versioning_session(session("human"));
+    col.commit_versioning_session(h).unwrap().unwrap();
+
+    // Edit only tags, no field changes.
+    col.snapshot_note_for_session(&session("human").id, note.id)
+        .unwrap();
+    note.tags = vec!["red".to_string(), "blue".to_string()];
+    col.update_note(&mut note).unwrap();
+    let h = col.begin_versioning_session(session("human"));
+    let hash = col.commit_versioning_session(h).unwrap();
+    assert!(
+        hash.is_some(),
+        "tag-only edit should produce a commit (tags are part of the row)",
+    );
+
+    let versions = col.list_note_versions(note.id).unwrap();
+    // Newest = the tag edit. Field list empty, tags_changed=true.
+    assert!(versions[0].changed_fields.is_empty());
+    assert!(
+        versions[0].tags_changed,
+        "tag-only edit must mark tags_changed; got {:?}",
+        versions[0],
+    );
+    // Oldest = the initial add. Always tags_changed=false (no prior).
+    assert!(!versions.last().unwrap().tags_changed);
+}

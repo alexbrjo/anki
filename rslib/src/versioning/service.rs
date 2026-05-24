@@ -153,5 +153,6 @@ fn into_pb(v: NoteVersion) -> pb::NoteVersion {
         session_id: v.session_id,
         session_kind: v.session_kind,
         changed_fields: v.changed_fields,
+        tags_changed: v.tags_changed,
     }
 }

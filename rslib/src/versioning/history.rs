@@ -34,6 +34,12 @@ pub struct NoteVersion {
     pub session_id: String,
     pub session_kind: String,
     pub changed_fields: Vec<String>,
+    /// True if the note's tags differ from the prior commit's tags.
+    /// Always false for the oldest version (no prior to compare against).
+    /// Surfaces "this commit only touched tags" in the sidebar — without
+    /// this flag, tag-only edits render as "(no field change)" even
+    /// though something did change.
+    pub tags_changed: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -51,6 +57,7 @@ struct HistoryRow {
     message: String,
     mid: i64,
     flds: String,
+    tags: String,
 }
 
 impl Collection {
@@ -114,7 +121,7 @@ fn load_history(col: &Collection, nid: NoteId) -> Result<Vec<HistoryRow>> {
              JOIN dolt_commit_ancestors a
                ON c.commit_hash = a.commit_hash
          )
-         SELECT h.commit_hash, l.date, h.committer, l.message, h.mid, h.flds
+         SELECT h.commit_hash, l.date, h.committer, l.message, h.mid, h.flds, h.tags
          FROM dolt_history_notes h
          JOIN dolt_log l USING (commit_hash)
          JOIN (
@@ -134,6 +141,7 @@ fn load_history(col: &Collection, nid: NoteId) -> Result<Vec<HistoryRow>> {
                 message: r.get(3)?,
                 mid: r.get(4)?,
                 flds: r.get(5)?,
+                tags: r.get(6)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -146,6 +154,12 @@ fn build_versions(rows: &[HistoryRow], field_names: Option<&[String]>) -> Vec<No
         let prior = rows.get(i + 1);
         let meta = parse_meta(&row.message);
         let changed = changed_field_names(&row.flds, prior.map(|p| p.flds.as_str()), field_names);
+        // Byte-level tag comparison. dolt_history_notes.tags is the same
+        // space-separated, leading/trailing-space-padded representation
+        // we wrote, so a direct string compare matches "did tag set
+        // change". Cheap exact-match is enough for a UI hint; the
+        // sidebar reveals the diff if the user opens it.
+        let tags_changed = prior.is_some_and(|p| p.tags != row.tags);
         out.push(NoteVersion {
             commit_hash: row.commit_hash.clone(),
             timestamp_secs: parse_dolt_date(&row.date),
@@ -153,6 +167,7 @@ fn build_versions(rows: &[HistoryRow], field_names: Option<&[String]>) -> Vec<No
             session_id: meta.session,
             session_kind: meta.kind,
             changed_fields: changed,
+            tags_changed,
         });
     }
     out
