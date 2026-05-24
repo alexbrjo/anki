@@ -86,11 +86,7 @@ impl Collection {
     /// note. The snapshot's `prior` is forced to `None`, so the next
     /// `commit_versioning_session` will see `None → Some(current)` and
     /// stamp a commit. Call this after `add_note` (when `nid` is known).
-    pub fn mark_note_added_for_session(
-        &mut self,
-        session_id: &str,
-        nid: NoteId,
-    ) -> Result<()> {
+    pub fn mark_note_added_for_session(&mut self, session_id: &str, nid: NoteId) -> Result<()> {
         self.state
             .versioning
             .store(session_id.to_string(), NoteSnapshot { nid, prior: None });
@@ -107,10 +103,18 @@ impl Collection {
     /// commit next, mis-attributing them in the version log.
     pub fn commit_versioning_session(&mut self, handle: SessionHandle) -> Result<Option<String>> {
         let session_id = handle.info.id.clone();
-        let Some(snap) = self.state.versioning.take(&session_id) else {
+        let snaps = self.state.versioning.take(&session_id);
+        if snaps.is_empty() {
             return Ok(None);
-        };
-        if !snapshot_differs_from_current(self, &snap)? {
+        }
+        let mut any_changed = false;
+        for snap in &snaps {
+            if snapshot_differs_from_current(self, snap)? {
+                any_changed = true;
+                break;
+            }
+        }
+        if !any_changed {
             return Ok(None);
         }
         stage_all(self)?;

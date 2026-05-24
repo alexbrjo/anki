@@ -74,20 +74,27 @@ pub struct NoteSnapshot {
     pub prior: Option<(String, String)>,
 }
 
-/// In-memory map of session-id → snapshot, lives on `CollectionState`.
-/// One slot per active editor session; multiple editors simultaneously
-/// open just use distinct session ids.
+/// In-memory map of session-id → per-note snapshots, lives on
+/// `CollectionState`. A single session can snapshot multiple notes
+/// (agent batch edits); re-snapshotting the same nid within a session
+/// overwrites that nid's entry but leaves other notes alone.
 #[derive(Default, Debug)]
 pub struct VersioningState {
-    snapshots: HashMap<String, NoteSnapshot>,
+    snapshots: HashMap<String, HashMap<NoteId, NoteSnapshot>>,
 }
 
 impl VersioningState {
     pub(crate) fn store(&mut self, session_id: String, snapshot: NoteSnapshot) {
-        self.snapshots.insert(session_id, snapshot);
+        self.snapshots
+            .entry(session_id)
+            .or_default()
+            .insert(snapshot.nid, snapshot);
     }
 
-    pub(crate) fn take(&mut self, session_id: &str) -> Option<NoteSnapshot> {
-        self.snapshots.remove(session_id)
+    pub(crate) fn take(&mut self, session_id: &str) -> Vec<NoteSnapshot> {
+        self.snapshots
+            .remove(session_id)
+            .map(|m| m.into_values().collect())
+            .unwrap_or_default()
     }
 }

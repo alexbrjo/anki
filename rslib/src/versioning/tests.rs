@@ -530,3 +530,61 @@ fn merge_commits_appear_in_history() {
         "merge-side commit should appear in history; got {authors:?}"
     );
 }
+
+/// TODO #3 — `snapshot_note_for_session` stores snapshots in a
+/// `HashMap<session_id, NoteSnapshot>`. Snapshotting a second note under
+/// the same session id overwrites the first. The dirty-check at commit
+/// time then inspects only the last snapshot, so a session that edits
+/// note A but also snapshotted note B (where B happened to be unchanged)
+/// is treated as a no-op. A's edit stays uncommitted in the working
+/// table and gets swept into the next unrelated commit.
+#[test]
+fn multi_note_session_commits_when_any_snapshot_differs() {
+    let mut col = Collection::new();
+
+    let mut a = NoteAdder::basic(&mut col).fields(&["a", "back"]).note();
+    col.add_note(&mut a, crate::decks::DeckId(1)).unwrap();
+    col.mark_note_added_for_session("seed-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", a.id)
+        .unwrap();
+    let h = col.begin_versioning_session(SessionInfo {
+        id: "seed-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+        kind: SessionKind::Editor,
+        author: "human".into(),
+    });
+    col.commit_versioning_session(h).unwrap().unwrap();
+
+    let mut b = NoteAdder::basic(&mut col).fields(&["b", "back"]).note();
+    col.add_note(&mut b, crate::decks::DeckId(1)).unwrap();
+    col.mark_note_added_for_session("seed-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", b.id)
+        .unwrap();
+    let h = col.begin_versioning_session(SessionInfo {
+        id: "seed-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
+        kind: SessionKind::Editor,
+        author: "human".into(),
+    });
+    col.commit_versioning_session(h).unwrap().unwrap();
+
+    // Agent batch: snapshots both notes, edits only A, then commits.
+    let sid = "agentbatch0000000000000000000000".to_string();
+    col.snapshot_note_for_session(&sid, a.id).unwrap();
+    col.snapshot_note_for_session(&sid, b.id).unwrap();
+    a.fields_mut()[0] = "a-edited".to_string();
+    col.update_note(&mut a).unwrap();
+
+    let h = col.begin_versioning_session(SessionInfo {
+        id: sid,
+        kind: SessionKind::Agent,
+        author: "agent:batch".into(),
+    });
+    let hash = col.commit_versioning_session(h).unwrap();
+    assert!(
+        hash.is_some(),
+        "edit to A must be committed even though B was also snapshotted",
+    );
+    let versions_a = col.list_note_versions(a.id).unwrap();
+    assert_eq!(
+        versions_a[0].author, "agent:batch",
+        "newest version of A should be the agent edit; got {versions_a:?}",
+    );
+    assert_eq!(versions_a[0].changed_fields, vec!["Front".to_string()]);
+}
