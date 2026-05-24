@@ -67,11 +67,7 @@ impl Collection {
     /// changed. Pass the id of an existing note — if the note doesn't
     /// exist yet (Add Cards flow), don't snapshot at all and the commit
     /// will fall back to the older `dolt_status` check.
-    pub fn snapshot_note_for_session(
-        &mut self,
-        session_id: &str,
-        nid: NoteId,
-    ) -> Result<()> {
+    pub fn snapshot_note_for_session(&mut self, session_id: &str, nid: NoteId) -> Result<()> {
         let row = read_note_content(self, nid)?;
         let Some((flds, tags)) = row else {
             // Note not present (e.g. it was deleted between begin and now).
@@ -89,10 +85,7 @@ impl Collection {
     /// no snapshot was taken and the notes table is dirty at the engine
     /// level). Returns the new commit hash, or `None` if nothing was
     /// committed.
-    pub fn commit_versioning_session(
-        &mut self,
-        handle: SessionHandle,
-    ) -> Result<Option<String>> {
+    pub fn commit_versioning_session(&mut self, handle: SessionHandle) -> Result<Option<String>> {
         let session_id = handle.info.id.clone();
         let snapshot = self.state.versioning.take(&session_id);
 

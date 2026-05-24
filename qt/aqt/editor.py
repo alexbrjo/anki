@@ -194,6 +194,10 @@ class Editor:
         self._versioning_session_id: str = ""
         self._versioning_active: bool = False
         self._versioning_author: str = "human"
+        # When True, the editor is showing the content of a prior commit as
+        # a preview. Saves are suppressed so the live row isn't overwritten
+        # by accidental edits in the webview during preview.
+        self._versioning_preview_active: bool = False
         self._init_links()
         self.setupOuter()
         self.add_webview()
@@ -214,8 +218,8 @@ class Editor:
         self._setup_versions_bar()
 
     def _setup_versions_bar(self) -> None:
-        """Strip with a single 'Versions' button below the webview that
-        opens the per-note version history dialog. Hidden in Add mode (no
+        """Strip with a single 'Versions' toggle button below the webview that
+        shows/hides the version-history sidebar. Hidden in Add mode (no
         note id yet)."""
         bar = QWidget(self.widget)
         bar_layout = QHBoxLayout(bar)
@@ -223,7 +227,8 @@ class Editor:
         bar_layout.addStretch(1)
         self._versions_button = QPushButton("Versions", bar)
         self._versions_button.setFlat(True)
-        self._versions_button.clicked.connect(self._open_versions_dialog)
+        self._versions_button.setCheckable(True)
+        self._versions_button.clicked.connect(self._toggle_versions_sidebar)
         self._versions_button.setEnabled(False)
         bar_layout.addWidget(self._versions_button)
         self._versions_bar = bar
@@ -231,17 +236,44 @@ class Editor:
         if self.addMode:
             bar.hide()
 
-    def _open_versions_dialog(self) -> None:
+    def _toggle_versions_sidebar(self, checked: bool) -> None:
+        sidebar = getattr(self, "_versions_sidebar", None)
+        if sidebar is None:
+            return
+        sidebar.setVisible(checked)
+        if checked and self.note is not None:
+            sidebar.reload(self.note.id)
+        elif not checked:
+            # Hiding the sidebar implicitly drops any active preview so the
+            # editor returns to the live note.
+            self.exit_version_preview()
+
+    def preview_note_version(self, fields: list[str], tags: list[str]) -> None:
+        """Display the given historical fields/tags in the editor without
+        persisting them. Edits made while previewing are dropped on exit
+        (see ``_save_current_note``)."""
         if not self.note:
             return
-        from aqt.editor_versions import open_versions_dialog
+        self._versioning_preview_active = True
+        # Pad/truncate to current note-type field count in case the schema
+        # changed between commits.
+        target_len = len(self.note.fields)
+        padded = list(fields[:target_len]) + [""] * max(0, target_len - len(fields))
+        self.note.fields = padded
+        self.note.tags = list(tags)
+        self.loadNoteKeepingFocus()
 
-        open_versions_dialog(
-            self.parentWindow,
-            self.mw,
-            self.note.id,
-            on_restored=self._reload_note_after_external_change,
-        )
+    def exit_version_preview(self) -> None:
+        """Drop preview state and reload the live note from disk."""
+        if not self.note or not self._versioning_preview_active:
+            return
+        self._versioning_preview_active = False
+        try:
+            self.note.load()
+        except Exception as e:
+            print(f"versioning: note.load() failed exiting preview: {e}")
+            return
+        self.loadNoteKeepingFocus()
 
     def _reload_note_after_external_change(self) -> None:
         """Refresh the editor view after the backend mutated the note out
@@ -250,6 +282,7 @@ class Editor:
         duplicate commit for the same content."""
         if not self.note:
             return
+        self._versioning_preview_active = False
         try:
             self.note.load()
         except Exception as e:
@@ -262,9 +295,20 @@ class Editor:
             self._begin_versioning_session()
 
     def add_webview(self) -> None:
-        self.web = EditorWebView(self.widget, self)
+        from aqt.editor_versions import VersionsSidebar
+
+        container = QWidget(self.widget)
+        hbox = QHBoxLayout(container)
+        hbox.setContentsMargins(0, 0, 0, 0)
+        hbox.setSpacing(0)
+        self.web = EditorWebView(container, self)
         self.web.set_bridge_command(self.onBridgeCmd, self)
-        self.outerLayout.addWidget(self.web, 1)
+        hbox.addWidget(self.web, 1)
+        self._versions_sidebar = VersionsSidebar(container, self)
+        self._versions_sidebar.on_restored(self._reload_note_after_external_change)
+        self._versions_sidebar.hide()
+        hbox.addWidget(self._versions_sidebar)
+        self.outerLayout.addWidget(container, 1)
 
     def setupWeb(self) -> None:
         if self.editorMode == EditorMode.ADD_CARDS:
@@ -646,11 +690,22 @@ require("anki/ui").loaded.then(() => require("anki/NoteEditor").instances[0].too
         # produce phantom commits.
         if self.note is not None and self._versioning_active:
             self._commit_versioning_session()
+        # Loading a new note ends any preview state implicitly.
+        self._versioning_preview_active = False
         self.note = note
         self.currentField = None
         # The Versions button needs a note id to be useful.
         if hasattr(self, "_versions_button"):
             self._versions_button.setEnabled(note is not None and not self.addMode)
+        sidebar = getattr(self, "_versions_sidebar", None)
+        if sidebar is not None:
+            if note is None or self.addMode:
+                sidebar.hide()
+                if hasattr(self, "_versions_button"):
+                    self._versions_button.setChecked(False)
+                sidebar.reload(None)
+            elif sidebar.isVisible():
+                sidebar.reload(note.id)
         if self.note:
             self.loadNote(focusTo=focusTo)
             if not self.addMode:
@@ -779,6 +834,12 @@ require("anki/ui").loaded.then(() => require("anki/NoteEditor").instances[0].too
     def _save_current_note(self) -> None:
         "Call after note is updated with data from webview."
         if not self.note:
+            return
+        if self._versioning_preview_active:
+            # The in-memory note is currently holding a historical preview;
+            # writing it back would silently turn the preview into a real
+            # edit. Drop the save — the user can click Revert if they want
+            # to land the preview as a new commit.
             return
 
         update_note(parent=self.widget, note=self.note).run_in_background(

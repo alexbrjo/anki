@@ -4,11 +4,13 @@
 use anki_proto::versioning as pb;
 
 use super::history::NoteVersion;
+use super::restore::load_historical_fields_and_tags;
 use super::session::SessionInfo;
 use super::session::SessionKind;
 use crate::collection::Collection;
 use crate::error;
 use crate::notes::NoteId;
+use crate::tags::split_tags;
 
 impl crate::services::VersioningService for Collection {
     fn begin_session(
@@ -46,6 +48,17 @@ impl crate::services::VersioningService for Collection {
         Ok(pb::NoteVersionsResponse {
             versions: versions.into_iter().map(into_pb).collect(),
         })
+    }
+
+    fn get_note_at_version(
+        &mut self,
+        input: pb::GetNoteAtVersionRequest,
+    ) -> error::Result<pb::GetNoteAtVersionResponse> {
+        let (flds, tags) =
+            load_historical_fields_and_tags(self, NoteId(input.nid), &input.commit_hash)?;
+        let fields: Vec<String> = flds.split('\x1f').map(Into::into).collect();
+        let tags: Vec<String> = split_tags(&tags).map(Into::into).collect();
+        Ok(pb::GetNoteAtVersionResponse { fields, tags })
     }
 
     fn restore_note_version(

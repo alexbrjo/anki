@@ -58,7 +58,7 @@ pub struct RestoreOutcome {
     pub changes: crate::ops::OpChanges,
 }
 
-fn load_historical_fields_and_tags(
+pub(super) fn load_historical_fields_and_tags(
     col: &Collection,
     nid: NoteId,
     commit_hash: &str,

@@ -1,93 +1,131 @@
 # Copyright: Ankitects Pty Ltd and contributors
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
-"""Note-version history dialog.
+"""Note-version history sidebar.
 
-A minimal P0 UI for the per-note version log: opens a modal listing prior
-commits of a single note newest-first, with a Restore button per row that
-calls into the Rust ``RestoreNoteVersion`` RPC. Restoring writes a new
-revert commit (in-between versions remain in history) and re-loads the
-note in the editor so the user sees the rolled-back content.
+A collapsible right-hand panel attached to the editor. Lists the live note
+as ``(current)`` plus all prior commits newest-first; selecting an old row
+loads its content into the editor as a non-destructive preview. The
+``Revert to selected`` button writes a new commit equal to the selected
+version (append-only — in-between versions remain in history).
 """
 
 from __future__ import annotations
 
 import secrets
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from anki.notes import NoteId
 from anki.versioning_pb2 import NoteVersion, SessionKind
 from aqt.operations import CollectionOp
 from aqt.qt import (
-    QDialog,
-    QDialogButtonBox,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
     QPushButton,
-    QSizePolicy,
+    QSize,
+    Qt,
     QVBoxLayout,
     QWidget,
 )
 from aqt.utils import tooltip
 
 if TYPE_CHECKING:
-    from aqt.main import AnkiQt
+    from aqt.editor import Editor
 
 
-class VersionsDialog(QDialog):
-    def __init__(self, parent: QWidget, mw: AnkiQt, nid: NoteId) -> None:
+SIDEBAR_WIDTH = 280
+CURRENT_SENTINEL = ""  # commit hash for the "(current)" row
+
+
+class VersionsSidebar(QFrame):
+    """Right-hand panel listing the live note + prior versions.
+
+    Lifecycle: created once per ``Editor``, hidden by default. The editor
+    calls ``reload(nid)`` when the loaded note changes or the sidebar is
+    shown. Selecting a row previews that version in the editor; selecting
+    ``(current)`` exits preview.
+    """
+
+    def __init__(self, parent: QWidget, editor: Editor) -> None:
         super().__init__(parent)
-        self.mw = mw
-        self.nid = nid
-        self._on_restored_callback = None
-        self.setWindowTitle("Versions")
-        self.resize(560, 420)
+        self.editor = editor
+        self.mw = editor.mw
+        self.nid: NoteId | None = None
+        self._on_restored_callback: Callable[[], None] | None = None
+        self._suppress_selection_change = False
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+        self.setFixedWidth(SIDEBAR_WIDTH)
         self._build_ui()
-        self._reload()
 
-    def on_restored(self, callback) -> "VersionsDialog":
-        """Set a callback to fire after a successful Restore (e.g. to re-load
-        the editor's note view). Returns self for chaining."""
+    def on_restored(self, callback: Callable[[], None]) -> None:
         self._on_restored_callback = callback
-        return self
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
-        header = QLabel(
-            "Prior versions of this note, newest first. Restore writes a new"
-            " commit — in-between versions stay in history."
-        )
-        header.setWordWrap(True)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(6)
+
+        header = QLabel("<b>Versions</b>")
         layout.addWidget(header)
 
-        self.list = QListWidget()
+        hint = QLabel(
+            "Click a row to preview that version in the editor. Revert writes"
+            " a new commit; in-between versions stay in history."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: gray; font-size: 11px;")
+        layout.addWidget(hint)
+
+        self.list = QListWidget(self)
         self.list.setAlternatingRowColors(True)
+        self.list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
+        self.list.currentItemChanged.connect(self._on_current_changed)
         layout.addWidget(self.list, 1)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        buttons.rejected.connect(self.reject)
-        buttons.accepted.connect(self.accept)
-        layout.addWidget(buttons)
+        button_row = QHBoxLayout()
+        button_row.setContentsMargins(0, 0, 0, 0)
+        self.revert_btn = QPushButton("Revert to selected", self)
+        self.revert_btn.setEnabled(False)
+        self.revert_btn.clicked.connect(self._revert_selected)
+        button_row.addWidget(self.revert_btn, 1)
+        layout.addLayout(button_row)
 
-    def _reload(self) -> None:
-        self.list.clear()
+    def sizeHint(self) -> QSize:  # type: ignore[override]
+        return QSize(SIDEBAR_WIDTH, 400)
+
+    def reload(self, nid: NoteId | None) -> None:
+        """Repopulate the list for ``nid`` (or clear if ``None``).
+
+        Always selects the ``(current)`` row, which has the side-effect of
+        exiting any active preview in the editor.
+        """
+        self.nid = nid
+        self._suppress_selection_change = True
         try:
-            versions = self.mw.col._backend.list_note_versions(nid=int(self.nid))
-        except Exception as e:
-            self.list.addItem(f"Could not load versions: {e}")
-            return
-
-        if not versions:
-            self.list.addItem("No prior versions recorded for this note.")
-            return
-
-        last_index = len(versions) - 1
-        for i, v in enumerate(versions):
-            self._add_row(v, is_oldest=(i == last_index))
+            self.list.clear()
+            self.revert_btn.setEnabled(False)
+            if nid is None:
+                self.list.addItem("No note loaded.")
+                return
+            current = QListWidgetItem("(current)\nlive note", self.list)
+            current.setData(Qt.ItemDataRole.UserRole, CURRENT_SENTINEL)
+            try:
+                versions = self.mw.col._backend.list_note_versions(nid=int(nid))
+            except Exception as e:
+                self.list.addItem(f"Could not load versions: {e}")
+                self.list.setCurrentItem(current)
+                return
+            last_index = len(versions) - 1
+            for i, v in enumerate(versions):
+                self._add_row(v, is_oldest=(i == last_index))
+            self.list.setCurrentItem(current)
+        finally:
+            self._suppress_selection_change = False
 
     def _add_row(self, v: NoteVersion, is_oldest: bool) -> None:
         when = _format_timestamp(v.timestamp_secs)
@@ -95,71 +133,79 @@ class VersionsDialog(QDialog):
         if v.changed_fields:
             fields = ", ".join(v.changed_fields)
         elif is_oldest:
-            # The oldest row has no prior to diff against.
             fields = "(initial)"
         else:
-            # Shouldn't happen with snapshot-based dirty detection in place,
-            # but if a commit somehow lands without a field change, label it
-            # honestly rather than mislabeling it as the initial version.
             fields = "(no field change)"
-        text = f"{when}  ·  {who}  ·  {fields}"
+        text = f"{when}\n{who} · {fields}"
+        item = QListWidgetItem(text, self.list)
+        item.setData(Qt.ItemDataRole.UserRole, v.commit_hash)
+        item.setToolTip(f"{when}\n{who}\n{fields}\ncommit {v.commit_hash[:12]}")
 
-        row_widget = QWidget()
-        row_layout = QHBoxLayout(row_widget)
-        row_layout.setContentsMargins(8, 4, 8, 4)
-        label = QLabel(text)
-        label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        row_layout.addWidget(label, 1)
-        restore_btn = QPushButton("Restore")
-        restore_btn.clicked.connect(
-            lambda _checked=False, commit=v.commit_hash: self._restore(commit)
-        )
-        row_layout.addWidget(restore_btn)
+    def _on_current_changed(
+        self, current: QListWidgetItem | None, _previous: QListWidgetItem | None
+    ) -> None:
+        if self._suppress_selection_change:
+            return
+        if current is None or self.nid is None:
+            self.revert_btn.setEnabled(False)
+            return
+        commit_hash = current.data(Qt.ItemDataRole.UserRole)
+        if commit_hash == CURRENT_SENTINEL:
+            self.revert_btn.setEnabled(False)
+            self.editor.exit_version_preview()
+            return
+        if not commit_hash:
+            self.revert_btn.setEnabled(False)
+            return
+        self.revert_btn.setEnabled(True)
+        try:
+            resp = self.mw.col._backend.get_note_at_version(
+                nid=int(self.nid), commit_hash=commit_hash
+            )
+        except Exception as e:
+            tooltip(f"Could not load this version: {e}", parent=self, period=3000)
+            return
+        self.editor.preview_note_version(list(resp.fields), list(resp.tags))
 
-        item = QListWidgetItem(self.list)
-        item.setSizeHint(row_widget.sizeHint())
-        self.list.addItem(item)
-        self.list.setItemWidget(item, row_widget)
-
-    def _restore(self, commit_hash: str) -> None:
+    def _revert_selected(self) -> None:
+        item = self.list.currentItem()
+        if item is None or self.nid is None:
+            return
+        commit_hash = item.data(Qt.ItemDataRole.UserRole)
+        if not commit_hash or commit_hash == CURRENT_SENTINEL:
+            return
         confirm = QMessageBox.question(
             self,
-            "Restore this version?",
-            "This will replace the note's current content with this version."
-            " The current content stays accessible in the version log.",
+            "Revert to this version?",
+            "This will replace the note's current content with the selected"
+            " version. The current content stays accessible in the version log.",
             QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
         )
         if confirm != QMessageBox.StandardButton.Ok:
             return
 
-        # Wrap in CollectionOp so the underlying update_note's OpChanges
-        # propagate through operation_did_execute — that's what marks the
-        # reviewer / browser dirty so they redraw the changed note. Bypassing
-        # CollectionOp (calling _backend directly) leaves the reviewer
-        # stuck on the pre-restore render until it happens to reload the
-        # card from db on its own.
+        nid = self.nid
+
         def do_restore(col):
             return col._backend.restore_note_version(
-                nid=int(self.nid),
+                nid=int(nid),
                 commit_hash=commit_hash,
                 session_id=secrets.token_hex(16),
                 kind=SessionKind.SESSION_KIND_EDITOR,
                 author="human",
             )
 
-        CollectionOp(self, do_restore).success(self._on_restore_success).run_in_background()
+        CollectionOp(self, do_restore).success(
+            self._on_restore_success
+        ).run_in_background()
 
     def _on_restore_success(self, response) -> None:
         if response.commit_hash:
-            tooltip("Restored to selected version", parent=self)
-            # Even with CollectionOp firing operation_did_execute, the
-            # reviewer only redraws on main-window focus. The Versions
-            # dialog (modal) is on top, so force the redraw now if the
-            # reviewer is showing this very note.
+            tooltip("Reverted to selected version", parent=self)
             self._refresh_reviewer_if_showing_this_note()
         else:
             tooltip(
-                "This version is identical to the current note — nothing to restore.",
+                "This version is identical to the current note — nothing to revert.",
                 parent=self,
                 period=2000,
             )
@@ -168,12 +214,11 @@ class VersionsDialog(QDialog):
                 self._on_restored_callback()
             except Exception:
                 pass
-        self._reload()
-
+        self.reload(self.nid)
 
     def _refresh_reviewer_if_showing_this_note(self) -> None:
         reviewer = getattr(self.mw, "reviewer", None)
-        if reviewer is None:
+        if reviewer is None or self.nid is None:
             return
         card = getattr(reviewer, "card", None)
         if card is None or card.nid != self.nid:
@@ -189,16 +234,3 @@ def _format_timestamp(secs: int) -> str:
         return "(unknown time)"
     dt = datetime.fromtimestamp(secs, tz=timezone.utc).astimezone()
     return dt.strftime("%Y-%m-%d %H:%M:%S")
-
-
-def open_versions_dialog(
-    parent: QWidget,
-    mw: AnkiQt,
-    nid: NoteId,
-    on_restored=None,
-) -> VersionsDialog:
-    dlg = VersionsDialog(parent, mw, nid)
-    if on_restored is not None:
-        dlg.on_restored(on_restored)
-    dlg.show()
-    return dlg

@@ -29,6 +29,12 @@ service VersioningService {
   // remain in history.
   rpc RestoreNoteVersion(RestoreNoteVersionRequest)
       returns (RestoreNoteVersionResponse);
+
+  // Read a note's fields & tags at a specific commit, without mutating
+  // anything. Used by the editor's version sidebar to preview an old
+  // version inline before the user decides to revert.
+  rpc GetNoteAtVersion(GetNoteAtVersionRequest)
+      returns (GetNoteAtVersionResponse);
 }
 
 service BackendVersioningService {}
@@ -92,6 +98,18 @@ message RestoreNoteVersionRequest {
   string session_id = 3;
   SessionKind kind = 4;
   string author = 5;
+}
+
+message GetNoteAtVersionRequest {
+  int64 nid = 1;
+  string commit_hash = 2;
+}
+
+message GetNoteAtVersionResponse {
+  // Field values in note-type order, same separator semantics as Note.fields.
+  repeated string fields = 1;
+  // Tag names (split on whitespace, same as Note.tags).
+  repeated string tags = 2;
 }
 
 message RestoreNoteVersionResponse {
