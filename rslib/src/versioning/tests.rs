@@ -786,3 +786,56 @@ fn tag_only_edit_marks_tags_changed_on_history_row() {
     // Oldest = the initial add. Always tags_changed=false (no prior).
     assert!(!versions.last().unwrap().tags_changed);
 }
+
+/// Reproduces the "(no change)" phantom-commit case the user reported
+/// in the editor sidebar: open editor → no user edits → close.
+///
+/// The editor's save flow calls `update_note` with the in-memory note
+/// even when nothing was typed. That hits `note_differs_from_db`,
+/// which strips sort_field / checksum and forces mtime to match — so
+/// it should return false on an unedited round-trip, take the
+/// early-exit, and leave the row untouched. Snapshot then equals
+/// current; no commit fires.
+///
+/// Pin this so a future refactor that breaks the early-exit (e.g. a
+/// new flag that makes `update_note` always write) gets caught.
+#[test]
+fn open_close_with_no_edits_makes_no_phantom_commit() {
+    let mut col = Collection::new();
+    let mut note = NoteAdder::basic(&mut col).fields(&["one", "back"]).note();
+    col.add_note(&mut note, crate::decks::DeckId(1)).unwrap();
+    col.mark_note_added_for_session(&session("human").id, note.id)
+        .unwrap();
+    let h = col.begin_versioning_session(session("human"));
+    col.commit_versioning_session(h).unwrap().unwrap();
+
+    // Simulate: editor opens → snapshot. JS save fires update_note with
+    // the unchanged in-memory note (webview always saves on blur).
+    // Editor closes → commit_session.
+    let before = dolt_log_len(&col);
+    for _ in 0..3 {
+        let sid = "open0close0open0close0open0close".to_string();
+        col.snapshot_note_for_session(&sid, note.id).unwrap();
+        // Reload from disk, then save back unchanged — same path as the
+        // webview's round-trip.
+        let mut roundtripped = col.storage.get_note(note.id).unwrap().unwrap();
+        col.update_note(&mut roundtripped).unwrap();
+        let info = SessionInfo {
+            id: sid,
+            kind: SessionKind::Editor,
+            actor_name: String::new(),
+        };
+        let h = col.begin_versioning_session(info);
+        let hash = col.commit_versioning_session(h).unwrap();
+        assert!(
+            hash.is_none(),
+            "no-op editor session must not produce a commit; \
+             got commit {hash:?}",
+        );
+    }
+    assert_eq!(
+        dolt_log_len(&col),
+        before,
+        "expected no new commits across 3 no-op editor sessions",
+    );
+}
