@@ -1481,6 +1481,15 @@ title="{}" {}>{}</button>""".format(
             m.action_upgrade_downgrade.setVisible(False)
         qconnect(m.actionPreferences.triggered, self.onPrefs)
 
+        # AI Chat (added programmatically to avoid editing the .ui form)
+        action_agent_chat = QAction(tr.actions_ai_chat(), m.menuTools)
+        m.menuTools.insertAction(m.actionPreferences, action_agent_chat)
+        m.menuTools.insertSeparator(m.actionPreferences)
+        qconnect(
+            action_agent_chat.triggered,
+            lambda: aqt.agent_chat.open_agent_chat(self),
+        )
+
         # View
         qconnect(
             m.actionZoomIn.triggered,

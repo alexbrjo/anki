@@ -16,6 +16,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from errno import EPROTOTYPE
 from http import HTTPStatus
+from typing import Any
 
 import flask
 import flask_cors
@@ -324,6 +325,164 @@ def _handle_builtin_file_request(request: BundledFileRequest) -> Response:
         return _text_response(HTTPStatus.INTERNAL_SERVER_ERROR, str(error))
 
 
+def _on_main_sync(fn: Callable[[], Any]) -> Any:
+    """Run ``fn`` on the Qt main thread from a worker thread, blocking until done.
+
+    TaskManager.run_on_main is fire-and-forget, so we coordinate with a
+    threading.Event. Used to bridge agent tool calls (running on a Flask
+    worker thread) back to the main thread that owns the collection.
+    """
+    box: dict[str, Any] = {}
+    done = threading.Event()
+
+    def wrapper() -> None:
+        try:
+            box["ok"] = fn()
+        except BaseException as e:
+            box["err"] = e
+        finally:
+            done.set()
+
+    assert aqt.mw is not None
+    aqt.mw.taskman.run_on_main(wrapper)
+    done.wait()
+    if "err" in box:
+        raise box["err"]
+    return box["ok"]
+
+
+_AGENT_MODEL_OPTIONS = [
+    "gpt-4o-mini",
+    "gpt-4o",
+    "gpt-4.1-mini",
+    "gpt-4.1",
+    "gpt-5-mini",
+    "gpt-5",
+]
+
+
+@app.route("/agent-chat/config", methods=["GET"])
+def agent_chat_config_get() -> Response:
+    """Return current config. Never returns the API key itself."""
+    mw = aqt.mw
+    if mw is None:
+        return _text_response(HTTPStatus.SERVICE_UNAVAILABLE, "no app")
+    return flask.jsonify(
+        {
+            "has_key": bool(mw.pm.openai_api_key()),
+            "model": mw.pm.openai_model(),
+            "model_options": _AGENT_MODEL_OPTIONS,
+        }
+    )
+
+
+@app.route("/agent-chat/config", methods=["POST"])
+def agent_chat_config_set() -> Response:
+    """Update API key and/or model. Pass {"api_key": "..."} or {"model": "..."}."""
+    mw = aqt.mw
+    if mw is None:
+        return _text_response(HTTPStatus.SERVICE_UNAVAILABLE, "no app")
+    body = flask.request.get_json(silent=True) or {}
+    if "api_key" in body:
+        key = (body["api_key"] or "").strip()
+        mw.pm.set_openai_api_key(key or None)
+    if "model" in body:
+        model = (body["model"] or "").strip()
+        mw.pm.set_openai_model(model or None)
+    return flask.jsonify({"ok": True})
+
+
+@app.route("/agent-chat/test", methods=["POST"])
+def agent_chat_test() -> Response:
+    """Validate the saved API key + model with a minimal round trip to OpenAI."""
+    import asyncio
+
+    from pydantic_ai import Agent
+    from pydantic_ai.models.openai import OpenAIModel
+    from pydantic_ai.providers.openai import OpenAIProvider
+
+    mw = aqt.mw
+    if mw is None:
+        return _text_response(HTTPStatus.SERVICE_UNAVAILABLE, "no app")
+    api_key = mw.pm.openai_api_key()
+    if not api_key:
+        return flask.jsonify({"ok": False, "error": "no key saved"})
+    model = mw.pm.openai_model()
+    try:
+        llm = OpenAIModel(model, provider=OpenAIProvider(api_key=api_key))
+        agent: Agent[None, str] = Agent(llm)
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(agent.run("Reply with the single word: ok"))
+        finally:
+            loop.close()
+        return flask.jsonify({"ok": True})
+    except Exception as e:
+        return flask.jsonify({"ok": False, "error": f"{type(e).__name__}: {e}"})
+
+
+@app.route("/agent-chat/stream", methods=["POST"])
+def agent_chat_stream() -> Response:
+    """Stream agent events as Server-Sent Events for one user message."""
+    import asyncio
+    import json
+
+    from anki.agent import chat
+
+    mw = aqt.mw
+    if mw is None or mw.col is None:
+        return _text_response(HTTPStatus.SERVICE_UNAVAILABLE, "no collection open")
+
+    api_key = mw.pm.openai_api_key()
+    if not api_key:
+        return _text_response(
+            HTTPStatus.UNAUTHORIZED, "no OpenAI API key configured"
+        )
+
+    body = flask.request.get_json(silent=True) or {}
+    message = (body.get("message") or "").strip()
+    if not message:
+        return _text_response(HTTPStatus.BAD_REQUEST, "missing 'message'")
+
+    model = mw.pm.openai_model()
+    col = mw.col
+
+    def generate() -> Any:
+        # Drive chat() inside a single asyncio task on a background thread so
+        # anyio CancelScopes (used by PydanticAI's run_stream) enter and exit
+        # in the same task. Bridge events to this Flask generator via a queue.
+        import queue as _queue
+
+        events: _queue.Queue[Any] = _queue.Queue()
+        sentinel = object()
+
+        async def producer() -> None:
+            try:
+                async for event in chat(
+                    col, api_key, model, message, on_main=_on_main_sync
+                ):
+                    events.put(event)
+            except BaseException as e:
+                events.put(
+                    {"type": "error", "message": f"{type(e).__name__}: {e}"}
+                )
+            finally:
+                events.put(sentinel)
+
+        def thread_main() -> None:
+            asyncio.run(producer())
+
+        threading.Thread(target=thread_main, daemon=True).start()
+
+        while True:
+            item = events.get()
+            if item is sentinel:
+                return
+            yield f"data: {json.dumps(item)}\n\n"
+
+    return Response(generate(), mimetype="text/event-stream")
+
+
 @app.route("/<path:pathin>", methods=["GET", "POST"])
 def handle_request(pathin: str) -> Response:
     host = request.headers.get("Host", "").lower()
@@ -363,6 +522,7 @@ def is_sveltekit_page(path: str) -> bool:
         "import-csv",
         "import-page",
         "image-occlusion",
+        "agent-chat",
     ]
 
 

@@ -121,7 +121,7 @@ import aqt.forms
 
 
 from aqt import addcards, addons, browser, editcurrent, filtered_deck  # isort:skip
-from aqt import stats, about, preferences, mediasync  # isort:skip
+from aqt import stats, about, preferences, mediasync, agent_chat  # isort:skip
 
 
 class DialogManager:
@@ -136,6 +136,7 @@ class DialogManager:
         "About": [about.show, None],
         "Preferences": [preferences.Preferences, None],
         "sync_log": [mediasync.MediaSyncDialog, None],
+        "AgentChat": [agent_chat.AgentChatWindow, None],
     }
 
     def open(self, name: str, *args: Any, **kwargs: Any) -> Any:

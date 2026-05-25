@@ -755,6 +755,18 @@ create table if not exists profiles
     def ankihub_username(self) -> str | None:
         return self.profile.get("thirdPartyAnkiHubUsername")
 
+    def set_openai_api_key(self, val: str | None) -> None:
+        self.profile["openaiApiKey"] = val
+
+    def openai_api_key(self) -> str | None:
+        return self.profile.get("openaiApiKey")
+
+    def set_openai_model(self, val: str | None) -> None:
+        self.profile["openaiModel"] = val
+
+    def openai_model(self) -> str:
+        return self.profile.get("openaiModel") or "gpt-4o-mini"
+
     def allowed_url_schemes(self) -> list[str]:
         return self.profile.get("allowedUrlSchemes", [])
 

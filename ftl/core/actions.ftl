@@ -95,3 +95,4 @@ actions-auto-advance = Auto Advance
 actions-auto-advance-activated = Auto Advance enabled
 actions-auto-advance-deactivated = Auto Advance disabled
 actions-processing = Processing...
+actions-ai-chat = AI Chat
