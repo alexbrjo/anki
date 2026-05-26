@@ -24,7 +24,10 @@ from dataclasses import dataclass, field
 from typing import Any, TypeVar
 
 from pydantic_ai import Agent, RunContext
-from pydantic_ai.models.openai import OpenAIModel
+from pydantic_ai.models.openai import (
+    OpenAIResponsesModel,
+    OpenAIResponsesModelSettings,
+)
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from anki.collection import Collection
@@ -111,7 +114,18 @@ class AgentDeps:
 
 
 def build_agent(api_key: str, model: str) -> Agent[AgentDeps, str]:
-    llm = OpenAIModel(model, provider=OpenAIProvider(api_key=api_key))
+    # Use the Responses API rather than Chat Completions. For reasoning
+    # models (gpt-5, o-series) this is the only path that returns reasoning
+    # summary items in the stream; for non-reasoning models the setting is
+    # a no-op so it's safe as a default for all OpenAI models.
+    settings = OpenAIResponsesModelSettings(
+        openai_reasoning_summary="auto",
+    )
+    llm = OpenAIResponsesModel(
+        model,
+        provider=OpenAIProvider(api_key=api_key),
+        settings=settings,
+    )
     agent: Agent[AgentDeps, str] = Agent(
         llm, deps_type=AgentDeps, system_prompt=SYSTEM_PROMPT
     )
@@ -241,6 +255,55 @@ def build_agent(api_key: str, model: str) -> Agent[AgentDeps, str]:
     return agent
 
 
+def _translate_event(ev: Any) -> list[dict[str, Any]]:
+    """Map a PydanticAI stream event to zero or more wire events."""
+    from pydantic_ai import messages as M
+
+    kind = getattr(ev, "event_kind", None)
+    if kind == "part_start":
+        part = ev.part
+        if isinstance(part, M.ThinkingPart):
+            return [{"type": "thinking_start"}]
+        return []
+    if kind == "part_delta":
+        d = ev.delta
+        if isinstance(d, M.TextPartDelta):
+            return [{"type": "text_delta", "text": d.content_delta}]
+        if isinstance(d, M.ThinkingPartDelta):
+            text = d.content_delta or ""
+            if not text:
+                return []
+            return [{"type": "thinking_delta", "text": text}]
+        # ToolCallPartDelta — partial JSON args, intentionally suppressed
+        return []
+    if kind == "part_end":
+        part = ev.part
+        if isinstance(part, M.ThinkingPart):
+            return [{"type": "thinking_end"}]
+        return []
+    if kind == "function_tool_call":
+        p = ev.part
+        return [
+            {
+                "type": "tool_call",
+                "name": getattr(p, "tool_name", "?"),
+                "args": getattr(p, "args", None),
+                "tool_call_id": getattr(p, "tool_call_id", None),
+            }
+        ]
+    if kind == "function_tool_result":
+        p = ev.part
+        return [
+            {
+                "type": "tool_result",
+                "name": getattr(p, "tool_name", "?"),
+                "content": str(getattr(p, "content", ""))[:500],
+                "tool_call_id": getattr(p, "tool_call_id", None),
+            }
+        ]
+    return []
+
+
 async def chat(
     col: Collection,
     api_key: str,
@@ -253,10 +316,15 @@ async def chat(
 
     Event shapes:
       {"type": "text_delta", "text": str}
-      {"type": "tool_call",  "name": str, "args": Any}
-      {"type": "tool_result","name": str, "content": str}
+      {"type": "thinking_start"} / {"type": "thinking_delta", "text": str} /
+        {"type": "thinking_end"}
+      {"type": "tool_call",  "name": str, "args": Any, "tool_call_id": str|None}
+      {"type": "tool_result","name": str, "content": str, "tool_call_id": str|None}
       {"type": "done"}
       {"type": "error", "message": str}
+
+    Events come out in true model-stream order: reasoning, tool calls, results,
+    and answer text interleave as the model produces them.
     """
     # Open one versioning session for the whole turn — any edits made by tools
     # join it, and we commit once at the end. Without this, each tool call
@@ -271,24 +339,15 @@ async def chat(
     )
     try:
         agent = build_agent(api_key, model)
-        async with agent.run_stream(message, deps=deps) as result:
-            async for text in result.stream_text(delta=True):
-                yield {"type": "text_delta", "text": text}
-            for msg in result.new_messages():
-                for part in getattr(msg, "parts", []):
-                    kind = getattr(part, "part_kind", None)
-                    if kind == "tool-call":
-                        yield {
-                            "type": "tool_call",
-                            "name": getattr(part, "tool_name", "?"),
-                            "args": getattr(part, "args", None),
-                        }
-                    elif kind == "tool-return":
-                        yield {
-                            "type": "tool_result",
-                            "name": getattr(part, "tool_name", "?"),
-                            "content": str(getattr(part, "content", ""))[:500],
-                        }
+        async with agent.iter(message, deps=deps) as run:
+            async for node in run:
+                if Agent.is_model_request_node(node) or Agent.is_call_tools_node(
+                    node
+                ):
+                    async with node.stream(run.ctx) as stream:
+                        async for ev in stream:
+                            for out in _translate_event(ev):
+                                yield out
     except Exception as e:  # surface errors over the stream rather than crashing
         yield {"type": "error", "message": f"{type(e).__name__}: {e}"}
     finally:
@@ -332,10 +391,22 @@ def main() -> None:
     col = Collection(args.collection)
 
     async def _run() -> None:
+        in_thinking = False
         async for event in chat(col, api_key, args.model, args.message):
             kind = event["type"]
             if kind == "text_delta":
+                if in_thinking:
+                    print("", flush=True)
+                    in_thinking = False
                 print(event["text"], end="", flush=True)
+            elif kind == "thinking_start":
+                print("\n[thinking] ", end="", flush=True)
+                in_thinking = True
+            elif kind == "thinking_delta":
+                print(event["text"], end="", flush=True)
+            elif kind == "thinking_end":
+                print("", flush=True)
+                in_thinking = False
             elif kind == "tool_call":
                 print(f"\n[tool] {event['name']}({event['args']})", flush=True)
             elif kind == "tool_result":

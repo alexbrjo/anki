@@ -398,7 +398,7 @@ def agent_chat_test() -> Response:
     import asyncio
 
     from pydantic_ai import Agent
-    from pydantic_ai.models.openai import OpenAIModel
+    from pydantic_ai.models.openai import OpenAIResponsesModel
     from pydantic_ai.providers.openai import OpenAIProvider
 
     mw = aqt.mw
@@ -409,7 +409,7 @@ def agent_chat_test() -> Response:
         return flask.jsonify({"ok": False, "error": "no key saved"})
     model = mw.pm.openai_model()
     try:
-        llm = OpenAIModel(model, provider=OpenAIProvider(api_key=api_key))
+        llm = OpenAIResponsesModel(model, provider=OpenAIProvider(api_key=api_key))
         agent: Agent[None, str] = Agent(llm)
         loop = asyncio.new_event_loop()
         try:

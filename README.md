@@ -1,4 +1,4 @@
-# Anki with Agentic  with Version Controlled via Doltlite
+# Agentic Anki with Version Control via Doltlite
 
 This is a fork that adds a tool calling agent and version control to Anki. SQLite was ripped out and replaced with [Doltlite](https://www.dolthub.com/blog/2026-03-25-doltlite/). Doltlite is a SQLite fork that swaps the B-tree pager for a content-addressed prolly tree. Doltlite is essentially SQLite x git. This powers a basic version control and revert feature for notes.
 

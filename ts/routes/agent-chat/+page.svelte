@@ -9,7 +9,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     type Block =
         | { kind: "user"; text: string }
         | { kind: "assistant"; text: string }
-        | { kind: "tool"; name: string; args: unknown; result: string | null };
+        | { kind: "tool"; name: string; args: unknown; result: string | null }
+        | {
+              kind: "thinking";
+              text: string;
+              startedAt: number;
+              endedAt: number | null;
+          };
 
     type Config = {
         has_key: boolean;
@@ -117,6 +123,59 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         scrollToBottom();
     }
 
+    function startThinking(): void {
+        // Start a new thinking block (a fresh reasoning span).
+        blocks = [
+            ...blocks,
+            { kind: "thinking", text: "", startedAt: Date.now(), endedAt: null },
+        ];
+        scrollToBottom();
+    }
+
+    function appendThinkingDelta(delta: string): void {
+        for (let i = blocks.length - 1; i >= 0; i--) {
+            const b = blocks[i];
+            if (b.kind === "thinking" && b.endedAt === null) {
+                b.text += delta;
+                blocks = blocks;
+                scrollToBottom();
+                return;
+            }
+        }
+        // No open thinking block — model started streaming reasoning without a
+        // part_start (some providers do this). Open one implicitly.
+        startThinking();
+        const last = blocks[blocks.length - 1];
+        if (last.kind === "thinking") {
+            last.text = delta;
+            blocks = blocks;
+        }
+    }
+
+    function endThinking(): void {
+        for (let i = blocks.length - 1; i >= 0; i--) {
+            const b = blocks[i];
+            if (b.kind === "thinking" && b.endedAt === null) {
+                b.endedAt = Date.now();
+                blocks = blocks;
+                return;
+            }
+        }
+    }
+
+    function thinkingHeader(b: {
+        text: string;
+        startedAt: number;
+        endedAt: number | null;
+    }): string {
+        const words = b.text.trim() ? b.text.trim().split(/\s+/).length : 0;
+        if (b.endedAt === null) {
+            return words > 0 ? `Thinking… ${words} words` : "Thinking…";
+        }
+        const secs = Math.max(0, Math.round((b.endedAt - b.startedAt) / 1000));
+        return `Thought for ${secs}s · ${words} words`;
+    }
+
     function appendToolResult(name: string, content: string): void {
         for (let i = blocks.length - 1; i >= 0; i--) {
             const b = blocks[i];
@@ -184,6 +243,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     }
                     if (event.type === "text_delta") {
                         appendAssistantText(event.text as string);
+                    } else if (event.type === "thinking_start") {
+                        startThinking();
+                    } else if (event.type === "thinking_delta") {
+                        appendThinkingDelta(event.text as string);
+                    } else if (event.type === "thinking_end") {
+                        endThinking();
                     } else if (event.type === "tool_call") {
                         appendToolCall(event.name as string, event.args);
                     } else if (event.type === "tool_result") {
@@ -288,8 +353,18 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 <div class="msg assistant">
                     {@html marked.parse(block.text)}
                 </div>
+            {:else if block.kind === "thinking"}
+                <details class="msg thinking">
+                    <summary>
+                        {#if block.endedAt === null}
+                            <span class="pulse">●</span>
+                        {/if}
+                        <span class="thinking-header">{thinkingHeader(block)}</span>
+                    </summary>
+                    <div class="thinking-body">{block.text}</div>
+                </details>
             {:else}
-                <details class="msg tool">
+                <details class="msg tool" class:pending={block.result === null}>
                     <summary>
                         <code>{block.name}</code>
                         {#if block.result === null}<span class="pending">…</span>{/if}
@@ -487,6 +562,43 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         white-space: normal;
     }
 
+    .msg.thinking {
+        align-self: flex-start;
+        background: transparent;
+        border: 1px dashed rgba(0, 0, 0, 0.15);
+        padding: 4px 10px;
+        font-size: 12px;
+        opacity: 0.85;
+
+        summary {
+            cursor: pointer;
+            color: var(--fg-subtle, #666);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .thinking-header {
+            font-style: italic;
+        }
+        .thinking-body {
+            margin-top: 6px;
+            font-style: italic;
+            color: var(--fg-subtle, #555);
+            white-space: pre-wrap;
+            line-height: 1.4;
+        }
+        .pulse {
+            color: #2563eb;
+            animation: pulse 1.1s ease-in-out infinite;
+            font-size: 10px;
+            line-height: 1;
+        }
+    }
+    @keyframes pulse {
+        0%, 100% { opacity: 0.35; }
+        50% { opacity: 1; }
+    }
+
     .msg.tool {
         align-self: flex-start;
         background: rgba(0, 0, 0, 0.02);
@@ -497,6 +609,16 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         summary {
             cursor: pointer;
             color: var(--fg-subtle, #555);
+        }
+        summary code {
+            color: #2563eb;
+            background: rgba(37, 99, 235, 0.08);
+            padding: 1px 6px;
+            border-radius: 3px;
+        }
+        &.pending summary code {
+            color: var(--fg-subtle, #888);
+            background: rgba(0, 0, 0, 0.06);
         }
         .tool-section {
             margin-top: 6px;
